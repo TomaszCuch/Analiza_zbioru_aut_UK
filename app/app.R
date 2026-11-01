@@ -8,6 +8,7 @@ library(ggplot2)
 library(xgboost)
 library(recipes)
 library(shiny.i18n)
+library(curl)
 library(showtext)
 library(ragg)
 
