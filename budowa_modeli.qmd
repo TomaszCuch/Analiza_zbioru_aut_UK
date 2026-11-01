@@ -1,0 +1,2398 @@
+---
+title: "Budowa modeli"
+author: "Tomasz Cuch"
+format: html
+embed-resources: true
+self-contained-math: true
+editor: visual
+toc: true
+toc-location: left
+toc-title: "Spis treści"
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r, message=FALSE, warning=FALSE}
+
+# ustawienie domyślnego serwera CRAN
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+# instalacja remotes (jeśli nie ma)
+if (!requireNamespace("remotes", quietly = TRUE))
+{
+  install.packages("remotes")
+}
+
+# instalacja ParBayesianOptimization (jeśli nie ma)
+if (!requireNamespace("ParBayesianOptimization", quietly = TRUE))
+{
+  remotes::install_version(
+    "ParBayesianOptimization",
+    repos = "https://cloud.r-project.org"
+  )
+}  
+
+# instalacja CatBoost (jeśli nie ma)
+if (!requireNamespace("catboost", quietly = TRUE))
+{
+  remotes::install_github("catboost/catboost",
+                          subdir = "catboost/R-package")
+}
+
+library(tidyverse)
+library(tidymodels)
+library(embed)
+library(callr)
+library(ranger)
+library(xgboost)
+library(lightgbm)
+library(catboost)
+library(reticulate)
+library(keras3)
+
+python <- reticulate::py_config()$python
+```
+
+# Wczytanie danych
+
+```{r}
+
+set.seed(2027)
+
+dane_modelowe <- readRDS("dane/dane_modelowe.rds")
+
+split <- readRDS("dane/split.rds")
+
+train <- training(split)
+validation <- validation(split)
+test <- testing(split)
+
+# weryfikacja zbioru walidacyjnego
+validation_set_tuning <- validation_set(split)
+
+v <- assessment(validation_set_tuning$splits[[1]])
+
+# Sprawdzenie liczby wierszy i kolumn
+dim(v)
+dim(validation)
+
+# Sprawdzenie identyczności zbiorów walidacyjnych
+all.equal(v, validation)
+
+metryki <- metric_set(rsq, mae, rmse, mape)
+
+# split do early stopping
+set.seed(2027)
+
+train_split <- initial_split(
+  train,
+  prop = 0.9,
+  strata = car_price
+)
+
+train90 <- training(train_split)
+train_es <- testing(train_split)
+
+cat("Train: ", nrow(train90), "\n",
+    "Train early stopping: ", nrow(train_es), "\n", sep = "")
+
+options(scipen = 999)
+```
+
+# Budowa modeli
+
+## Regresja liniowa z Elastic Net
+
+```{r}
+
+gc()
+
+callr::r(function()
+{
+  
+  cores <- 6
+  
+  library(tidyverse)
+  library(ggplot2)
+  library(tidymodels)
+  library(embed)
+  library(glmnet)
+  library(future)
+  set.seed(2027)
+  
+  
+  split <- readRDS("dane/split.rds")
+  
+  train <- training(split)
+  validation <- validation(split)
+  test <- testing(split)
+  
+  cat("Train:       ", nrow(train), "\n",
+      "Validation:  ", nrow(validation), "\n",
+      "Test:        ", nrow(test), "\n", sep = "")
+  
+  # weryfikacja zbioru walidacyjnego
+  validation_set_tuning <- validation_set(split = split)
+  
+  v <- assessment(validation_set_tuning$splits[[1]])
+  
+  # sprawdzenie liczby wierszy i kolumn
+  dim(v)
+  dim(validation)
+  
+  # sprawdzenie identyczności zbiorów walidacyjnych
+  all.equal(v, validation)
+  
+  metryki <- metric_set(rsq, mae, rmse, mape)
+  
+  
+  elastic_net_model <- linear_reg(
+    penalty = tune(), # siła regularyzacji na zbiorze walidacyjnym
+    mixture = tune()  # 0 = Ridge, 1 = Lasso, pomiędzy = Elastic Net
+  ) |> 
+    set_engine("glmnet") |> 
+    set_mode("regression")
+  
+  
+  recipe_elastic_net <- recipe(car_price ~ ., data = train) |>
+    
+    # Ochrona przed nowymi kategoriami
+    step_novel(all_nominal_predictors(), new_level = "inne") |>
+    
+    # Ochrona przed brakami danych
+    step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+    
+    # Target encoding dla marki i modelu przez generalizowany model mieszany
+    step_lencode_mixed(make, model, outcome = vars(car_price)) |>
+    
+    # Grupowanie do kategorii "inne" dla rzadkich kategorii poniżej 0,1%
+    step_other(all_nominal_predictors(), threshold = 0.001, other = "inne") |>
+    
+    # Zamiana pozostałych zmiennych kategorycznych na zmienne binarne
+    step_dummy(all_nominal_predictors(), one_hot = FALSE) |> 
+    
+    # Profilaktyczne usuwanie stałych kolumn
+    step_zv(all_predictors()) |> 
+    
+    # Normalizacja predyktorów numerycznych
+    step_normalize(all_numeric_predictors())
+  
+  
+  
+  recipe_prepped_elastic_net <- prep(recipe_elastic_net, training = train)
+  
+  train_processed <- bake(recipe_prepped_elastic_net, new_data = NULL)
+  
+  head(train_processed)
+  
+  
+  elastic_net_wflow <- workflow() |>
+    add_recipe(recipe_elastic_net) |>
+    add_model(elastic_net_model)
+  
+  
+  # Siatka regularna (6 x 5)
+  elastic_net_grid <- grid_regular(
+    penalty(range = c(-5, 0)), # od 0.00001 (słaba kara) do 1 (silna kara)
+    mixture(range = c(0, 1)),  # Od 0 (Ridge) do 1 (Lasso)
+    levels = c(penalty = 6, mixture = 5)
+  )
+  
+  plan(multisession, workers = cores)
+  
+  gc()
+  set.seed(2027)
+  
+  czas_tuning_elastic_net <- system.time({
+    tuning_elastic_net <- tune_grid(
+      elastic_net_wflow,
+      resamples = validation_set_tuning,
+      grid = elastic_net_grid,
+      metrics = metryki,
+      control = control_grid(
+        parallel_over = "everything"
+      )
+    )
+  })
+  
+  plan(sequential)
+  
+  sekundy_tuning_elastic_net <- as.numeric(czas_tuning_elastic_net[3])
+  saveRDS(sekundy_tuning_elastic_net, "czasy/sekundy_tuning_elastic_net.rds")
+  
+  # Zapis siatki parametrów
+  saveRDS(tuning_elastic_net, file = "tuning/tuning_elastic_net.rds")
+  
+  # Wczytanie siatki parametrów
+  tuning_elastic_net <- readRDS("tuning/tuning_elastic_net.rds")
+  
+  best_elastic_net <- select_best(tuning_elastic_net, metric = "mape")
+  
+  cat("Najlepsze lambda (penalty) i alfa (mixture) - Elastic Net:")
+  print(best_elastic_net) # penalty (lambda) i mixture (alfa)
+  
+  final_elastic_net_wflow <- finalize_workflow(elastic_net_wflow,
+                                               best_elastic_net)
+  
+  gc()
+  set.seed(2027)
+  
+  czas_fit_elastic_net <- system.time({
+    final_elastic_net_fit <- last_fit(final_elastic_net_wflow, split = split)
+  })
+  sekundy_fit_elastic_net <- as.numeric(czas_fit_elastic_net[3])
+  saveRDS(sekundy_fit_elastic_net, "czasy/sekundy_fit_elastic_net.rds")
+  
+  final_elastic_net_model <- extract_workflow(final_elastic_net_fit)
+  
+  # Zapis modelu
+  saveRDS(final_elastic_net_model, file = "modele/final_elastic_net_model.rds")
+  
+  
+  tabela_wspolczynnikow_elastic_net <- final_elastic_net_fit |> 
+    extract_fit_parsnip() |> 
+    tidy()
+  
+  tabela_wspolczynnikow_elastic_net
+  
+  wyzerowane_zmienne <- tabela_wspolczynnikow_elastic_net |> 
+    dplyr::filter(estimate == 0)
+  
+  print(wyzerowane_zmienne)
+  
+})
+
+Sys.sleep(30) # 30 sekund na odpoczynek
+```
+
+### Wyniki
+
+```{r}
+
+# Wczytanie modelu
+final_elastic_net_model <- readRDS("modele/final_elastic_net_model.rds")
+
+train_predictions_elastic_net <- augment(final_elastic_net_model,
+                                         new_data = train) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_elastic_net_train <- metryki(
+  train_predictions_elastic_net, 
+  truth = price_gbp, 
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "Regresja liniowa (Elastic Net)",
+         zbior = "Treningowy")
+
+val_predictions_elastic_net <- augment(final_elastic_net_model,
+                                       new_data = validation) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_elastic_net_val <- metryki(
+  val_predictions_elastic_net,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "Regresja liniowa (Elastic Net)",
+         zbior = "Walidacyjny")
+
+test_predictions_elastic_net <- augment(final_elastic_net_model,
+                                        new_data = test) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_elastic_net_test <- metryki(
+  test_predictions_elastic_net, 
+  truth = price_gbp, 
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "Regresja liniowa (Elastic Net)",
+         zbior = "Testowy")
+
+wyniki_elastic_net <- bind_rows(wyniki_elastic_net_train, wyniki_elastic_net_val, wyniki_elastic_net_test) |>
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+wyniki_elastic_net
+```
+
+## Random Forest
+
+```{r}
+
+recipe_rf <- recipe(car_price ~ ., data = train) |>
+  
+  # Ochrona przed nowymi kategoriami
+  step_novel(all_nominal_predictors(), new_level = "inne") |>
+  
+  # Ochrona przed brakami danych
+  step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+  
+  # Target encoding dla marki i modelu przez generalizowany model mieszany
+  step_lencode_mixed(make, model, outcome = vars(car_price)) |>
+  
+  # Grupowanie do kategorii "inne" dla rzadkich kategorii poniżej 0,1%
+  step_other(all_nominal_predictors(), threshold = 0.001, other = "inne") |>
+  
+  # Profilaktyczne usuwanie stałych kolumn
+  step_zv(all_predictors())
+
+
+
+recipe_prepped_rf <- prep(recipe_rf, training = train)
+
+train_rf <- as.data.frame(bake(recipe_prepped_rf, new_data = NULL))
+validation_rf <- as.data.frame(bake(recipe_prepped_rf, 
+                                    new_data = validation))
+test_rf <- as.data.frame(bake(recipe_prepped_rf, new_data = test))
+
+nazwy_predyktorow <- setdiff(names(train_rf), "car_price")
+```
+
+```{r}
+
+callr::r(function()
+{
+  
+  # instalacja ParBayesianOptimization (jeśli nie ma)
+  if (!requireNamespace("ParBayesianOptimization", quietly = TRUE))
+  {
+    remotes::install_version(
+      "ParBayesianOptimization",
+      repos = "https://cloud.r-project.org"
+    )
+  }
+  
+  cores <- 6
+  
+  library(tidyverse)
+  library(ggplot2)
+  library(tidymodels)
+  library(embed)
+  library(ParBayesianOptimization)
+  library(ranger)
+  set.seed(2027)
+  
+  
+  split <- readRDS("dane/split.rds")
+  
+  train <- training(split)
+  validation <- validation(split)
+  test <- testing(split)
+  
+  cat("Train:       ", nrow(train), "\n",
+      "Validation:  ", nrow(validation), "\n",
+      "Test:        ", nrow(test), "\n", sep = "")
+  
+  
+  recipe_rf <- recipe(car_price ~ ., data = train) |>
+    
+    # Ochrona przed nowymi kategoriami
+    step_novel(all_nominal_predictors(), new_level = "inne") |>
+    
+    # Ochrona przed brakami danych
+    step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+    
+    # Target encoding dla marki i modelu przez generalizowany model mieszany
+    step_lencode_mixed(make, model, outcome = vars(car_price)) |>
+    
+    # Grupowanie do kategorii "inne" dla rzadkich kategorii poniżej 0,1%
+    step_other(all_nominal_predictors(), threshold = 0.001, other = "inne") |>
+    
+    # Profilaktyczne usuwanie stałych kolumn
+    step_zv(all_predictors())
+  
+  
+  
+  recipe_prepped_rf <- prep(recipe_rf, training = train)
+  
+  train_rf <- as.data.frame(bake(recipe_prepped_rf, new_data = NULL))
+  validation_rf <- as.data.frame(bake(recipe_prepped_rf, 
+                                      new_data = validation))
+  test_rf <- as.data.frame(bake(recipe_prepped_rf, new_data = test))
+  
+  nazwy_predyktorow <- setdiff(names(train_rf), "car_price")
+  
+  
+  
+  zakresy_rf <- list(
+    min_n = c(10L, 500L),
+    mtry_prop = c(0.2, 0.9)
+  )
+  
+  rf_parametry <- parameters(
+    min_n(range = c(10L, 500L)),
+    mtry_prop(range = c(0.2, 0.9))
+  )
+  
+  set.seed(2027)
+  
+  init_grid_rf <- grid_space_filling(rf_parametry, size = 10) |> 
+    as.data.frame()
+  
+  
+  funkcja_rf <- function(mtry_prop, min_n)
+  {
+    liczba_predyktorow <- length(nazwy_predyktorow)
+    
+    min_n_int <- as.integer(round(min_n))
+    mtry_int <- as.integer(round(mtry_prop * liczba_predyktorow))
+    
+    mtry_int <- max(1L, min(mtry_int, liczba_predyktorow))
+    
+    model <- ranger(
+      formula = car_price ~ .,
+      data = train_rf,
+      num.trees = 500,
+      mtry = mtry_int,
+      min.node.size = min_n_int,
+      num.threads = cores,
+      seed = 2027,
+      respect.unordered.factors = "order" # szybszy trening
+    )
+    
+    predykcje_log <- predict(model, validation_rf)$predictions
+    
+    predykcje <- exp(predykcje_log)
+    y_val <- exp(validation_rf$car_price)
+    
+    mape <- mape_vec(y_val, predykcje)
+    
+    return(list(Score = -mape))
+  }
+  
+  
+  gc()
+  set.seed(2027)
+  
+  czas_tuning_rf <- system.time({
+    wyniki_tuning_bayes_rf <- bayesOpt(
+      FUN = funkcja_rf,
+      bounds = zakresy_rf,
+      initGrid = init_grid_rf,
+      iters.n = 20,
+      acq = "ei",
+      verbose = 1
+    )
+  })
+  sekundy_tuning_rf <- as.numeric(czas_tuning_rf[3])
+  saveRDS(sekundy_tuning_rf, "czasy/sekundy_tuning_rf.rds")
+  
+  best_params_rf <- getBestPars(wyniki_tuning_bayes_rf)
+  
+  saveRDS(best_params_rf, "tuning/best_params_rf.rds")
+  best_params_rf <- readRDS("tuning/best_params_rf.rds")
+  
+  
+  final_min_n <- as.integer(round(best_params_rf$min_n))
+  liczba_predyktorow <- ncol(train_rf) - 1
+  final_mtry <- max(1L, min(as.integer(round(best_params_rf$mtry_prop * liczba_predyktorow)), liczba_predyktorow))
+  
+  gc()
+  set.seed(2027)
+  
+  czas_fit_rf <- system.time({
+    final_rf <- ranger(
+      formula = car_price ~ .,
+      data = train_rf,
+      num.trees = 500,
+      mtry = final_mtry,
+      min.node.size = final_min_n,
+      num.threads = cores,
+      seed = 2027,
+      respect.unordered.factors = "order" # szybszy trening
+    )
+  })
+  sekundy_fit_rf <- as.numeric(czas_fit_rf[3])
+  saveRDS(sekundy_fit_rf, "czasy/sekundy_fit_rf.rds")
+  
+  # Zapis modelu
+  saveRDS(final_rf, file = "modele/final_rf_model.rds", compress = "xz")
+  
+})
+
+Sys.sleep(30) # 30 sekund na odpoczynek
+```
+
+### Wyniki
+
+```{r}
+
+# Wczytanie modelu
+final_rf <- readRDS("modele/final_rf_model.rds")
+
+preds_train_rf <- predict(final_rf, train_rf)$predictions |> 
+  as.vector()
+
+train_predictions_rf <- data.frame(
+  car_price = train$car_price,
+  .pred = preds_train_rf
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_rf_train <- metryki(
+  train_predictions_rf,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "Random Forest",
+         zbior = "Treningowy")
+
+preds_val_rf <- predict(final_rf, validation_rf)$predictions |> 
+  as.vector()
+
+val_predictions_rf <- data.frame(
+  car_price = validation$car_price,
+  .pred = preds_val_rf
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_rf_val <- metryki(
+  val_predictions_rf,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "Random Forest",
+         zbior = "Walidacyjny")
+
+preds_test_rf <- predict(final_rf, test_rf)$predictions |> 
+  as.vector()
+
+test_predictions_rf <- data.frame(
+  car_price = test$car_price,
+  .pred = preds_test_rf
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_rf_test <- metryki(
+  test_predictions_rf,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "Random Forest",
+         zbior = "Testowy")
+
+
+wyniki_rf <- bind_rows(wyniki_rf_train, wyniki_rf_val, wyniki_rf_test) |>
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+wyniki_rf
+```
+
+## XGBoost
+
+### Early stopping train
+
+Podział zbioru treningowego na 90% do treningu i 10% do **early stopping**
+
+```{r}
+
+set.seed(2027)
+
+train_split <- initial_split(
+  train,
+  prop = 0.9,
+  strata = car_price
+)
+
+train90 <- training(train_split)
+train_es <- testing(train_split)
+
+cat("Train:                ", nrow(train90), "\n",
+    "Train early stopping: ", nrow(train_es), "\n", sep = "")
+
+
+
+recipe_boosting <- recipe(car_price ~ ., data = train90) |>
+  
+  # Ochrona przed nowymi kategoriami
+  step_novel(all_nominal_predictors(), new_level = "inne") |>
+  
+  # Ochrona przed brakami danych
+  step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+  
+  # Usuwanie marek i modeli pojawiających się poniżej 10 razy
+  step_other(make, model, threshold = 10, other = "inne") |>
+  
+  # Usuwanie grup factorów o udziale poniżej 0.1%
+  step_other(all_nominal_predictors(), -make, -model, threshold = 0.001,
+             other = "inne") |>
+  
+  # Profilaktyczne usuwanie stałych kolumn
+  step_zv(all_predictors())
+
+
+recipe_prepped_boosting <- prep(recipe_boosting, training = train90)
+
+train_xgb_baked <- bake(recipe_prepped_boosting, new_data = NULL)
+train_es_xgb_baked <- bake(recipe_prepped_boosting, new_data = train_es)
+validation_xgb_baked <- bake(recipe_prepped_boosting, new_data = validation)
+test_xgb_baked <- bake(recipe_prepped_boosting, new_data = test)
+
+X_train_xgb <- train_xgb_baked |> 
+  dplyr::select(-car_price)
+y_train_xgb <- train_xgb_baked$car_price
+
+train_xgb <- xgb.DMatrix(
+  data = X_train_xgb,
+  label = y_train_xgb
+)
+
+X_es_xgb <- train_es_xgb_baked |> 
+  dplyr::select(-car_price)
+y_es_xgb <- train_es_xgb_baked$car_price
+
+train_es_xgb <- xgb.DMatrix(
+  data = X_es_xgb,
+  label = y_es_xgb
+)
+
+X_val_xgb <- validation_xgb_baked |> 
+  dplyr::select(-car_price)
+y_val_xgb <- validation_xgb_baked$car_price
+
+validation_xgb <- xgb.DMatrix(
+  data = X_val_xgb,
+  label = y_val_xgb
+)
+
+X_test_xgb <- test_xgb_baked |>
+  dplyr::select(-car_price)
+y_test_xgb <- test_xgb_baked$car_price
+
+test_xgb <- xgb.DMatrix(
+  data = X_test_xgb,
+  label = y_test_xgb
+)
+```
+
+```{r}
+
+callr::r(function()
+{
+  
+  # instalacja ParBayesianOptimization (jeśli nie ma)
+  if (!requireNamespace("ParBayesianOptimization", quietly = TRUE))
+  {
+    remotes::install_version(
+      "ParBayesianOptimization",
+      repos = "https://cloud.r-project.org"
+    )
+  }
+  
+  cores <- 6
+  
+  library(tidyverse)
+  library(ggplot2)
+  library(tidymodels)
+  library(ParBayesianOptimization)
+  library(xgboost)
+  set.seed(2027)
+  
+  
+  split <- readRDS("dane/split.rds")
+  
+  train <- training(split)
+  validation <- validation(split)
+  test <- testing(split)
+  
+  cat("Train:       ", nrow(train), "\n",
+      "Validation:  ", nrow(validation), "\n",
+      "Test:        ", nrow(test), "\n", sep = "")
+  
+  set.seed(2027)
+  
+  train_split <- initial_split(
+    train,
+    prop = 0.9,
+    strata = car_price
+  )
+  
+  train90 <- training(train_split)
+  train_es <- testing(train_split)
+  
+  cat("Train:                ", nrow(train90), "\n",
+      "Train early stopping: ", nrow(train_es), "\n", sep = "")
+  
+  
+  
+  recipe_boosting <- recipe(car_price ~ ., data = train90) |>
+    
+    # Ochrona przed nowymi kategoriami
+    step_novel(all_nominal_predictors(), new_level = "inne") |>
+    
+    # Ochrona przed brakami danych
+    step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+    
+    # Usuwanie marek i modeli pojawiających się poniżej 10 razy
+    step_other(make, model, threshold = 10, other = "inne") |>
+    
+    # Usuwanie grup factorów o udziale poniżej 0.1%
+    step_other(all_nominal_predictors(), -make, -model, threshold = 0.001,
+               other = "inne") |>
+    
+    # Profilaktyczne usuwanie stałych kolumn
+    step_zv(all_predictors())
+  
+  
+  recipe_prepped_boosting <- prep(recipe_boosting, training = train90)
+  
+  train_xgb_baked <- bake(recipe_prepped_boosting, new_data = NULL)
+  train_es_xgb_baked <- bake(recipe_prepped_boosting, new_data = train_es)
+  validation_xgb_baked <- bake(recipe_prepped_boosting,
+                               new_data = validation)
+  test_xgb_baked <- bake(recipe_prepped_boosting, new_data = test)
+  
+  X_train_xgb <- train_xgb_baked |> 
+    dplyr::select(-car_price)
+  y_train_xgb <- train_xgb_baked$car_price
+  
+  train_xgb <- xgb.DMatrix(
+    data = X_train_xgb,
+    label = y_train_xgb
+  )
+  
+  X_es_xgb <- train_es_xgb_baked |> 
+    dplyr::select(-car_price)
+  y_es_xgb <- train_es_xgb_baked$car_price
+  
+  train_es_xgb <- xgb.DMatrix(
+    data = X_es_xgb,
+    label = y_es_xgb
+  )
+  
+  X_val_xgb <- validation_xgb_baked |> 
+    dplyr::select(-car_price)
+  y_val_xgb <- validation_xgb_baked$car_price
+  
+  validation_xgb <- xgb.DMatrix(
+    data = X_val_xgb,
+    label = y_val_xgb
+  )
+  
+  X_test_xgb <- test_xgb_baked |>
+    dplyr::select(-car_price)
+  y_test_xgb <- test_xgb_baked$car_price
+  
+  test_xgb <- xgb.DMatrix(
+    data = X_test_xgb,
+    label = y_test_xgb
+  )
+  
+  
+  zakresy_xgb <- list(
+    learning_rate = c(-3, -1),
+    max_depth = c(4L, 10L),
+    min_child_weight = c(10L, 500L),
+    colsample_bytree = c(0.3, 1)
+  )
+  
+  xgb_parametry <- parameters(
+    learn_rate(range = c(-3, -1), trans = NULL),
+    tree_depth(range = c(4L, 10L)),
+    min_n(range = c(10L, 500L)),
+    mtry_prop(range = c(0.3, 1))
+  )
+  
+  set.seed(2027)
+  
+  init_grid_xgb <- grid_space_filling(xgb_parametry, size = 10) |> 
+    rename(
+      learning_rate = learn_rate,
+      max_depth = tree_depth,
+      min_child_weight = min_n,
+      colsample_bytree = mtry_prop
+    ) |> 
+    as.data.frame()
+  
+  
+  funkcja_xgb <- function(learning_rate, max_depth, min_child_weight,
+                          colsample_bytree)
+  {
+    learning_rate <- 10^learning_rate
+    
+    model <- xgb.train(
+      data = train_xgb,
+      nrounds = 5000,
+      evals = list(train = train_xgb, validation = train_es_xgb),
+      early_stopping_rounds = 50,
+      verbose = 0,
+      params = list(
+        objective = "reg:squarederror", # regresja
+        eval_metric = "rmse", # funkcja RMSE
+        tree_method = "hist", # szybszy trening i obsługa factorów
+        nthread = cores,
+        seed = 2027,
+        learning_rate = learning_rate,
+        max_depth = max_depth,
+        min_child_weight = min_child_weight,
+        colsample_bytree = colsample_bytree
+      )
+    )
+    
+    predykcje_log <- predict(model, validation_xgb)
+    
+    predykcje <- exp(predykcje_log)
+    y_val_real <- exp(y_val_xgb)
+    
+    mape <- mape_vec(y_val_real, predykcje)
+    
+    return(list(Score = -mape))
+  }
+  
+  gc()
+  set.seed(2027)
+  
+  czas_tuning_xgb <- system.time({
+    wyniki_tuning_bayes_xgb <- bayesOpt(
+      FUN = funkcja_xgb,
+      bounds = zakresy_xgb,
+      initGrid = init_grid_xgb,
+      iters.n = 20,
+      acq = "ei",
+      verbose = 1
+    )
+  })
+  sekundy_tuning_xgb <- as.numeric(czas_tuning_xgb[3])
+  saveRDS(sekundy_tuning_xgb, "czasy/sekundy_tuning_xgb.rds")
+  
+  best_params_xgb <- getBestPars(wyniki_tuning_bayes_xgb)
+  
+  best_params_xgb$learning_rate <- 10^(best_params_xgb$learning_rate)
+  
+  saveRDS(best_params_xgb, "tuning/best_params_xgb.rds")
+  best_params_xgb <- readRDS("tuning/best_params_xgb.rds")
+  
+  
+  gc()
+  set.seed(2027)
+  
+  czas_fit_xgb <- system.time({
+    final_xgb <- xgb.train(
+      data = train_xgb,
+      nrounds = 5000,
+      evals = list(train = train_xgb, validation = train_es_xgb),
+      early_stopping_rounds = 50,
+      verbose = 0,
+      params = list(
+        objective = "reg:squarederror", # regresja
+        eval_metric = "rmse", # funkcja RMSE
+        tree_method = "hist", # szybszy trening metodą histogramową
+        nthread = cores,
+        seed = 2027,
+        learning_rate = best_params_xgb$learning_rate,
+        max_depth = best_params_xgb$max_depth,
+        min_child_weight = best_params_xgb$min_child_weight,
+        colsample_bytree = best_params_xgb$colsample_bytree
+      )
+    )
+  })
+  sekundy_fit_xgb <- as.numeric(czas_fit_xgb[3])
+  saveRDS(sekundy_fit_xgb, "czasy/sekundy_fit_xgb.rds")
+  
+  xgb.attributes(final_xgb)
+  
+  history_xgb <- attr(final_xgb, "evaluation_log")
+  
+  best_iter_xgb <- xgb.attr(final_xgb, "best_iteration") + 1 # numeracja od 1, nie od 0
+  cat("Optymalna liczba drzew dla XGBoost: ", best_iter_xgb)
+  
+  # Zapis modelu
+  xgb.save(final_xgb, "modele/final_xgboost_model.ubj")
+  
+  history_xgb <- history_xgb |> 
+    pivot_longer(
+      cols = c(train_rmse, validation_rmse),
+      names_to = "zbior",
+      values_to = "RMSE"
+    ) |> 
+    mutate(
+      zbior = ifelse(zbior == "train_rmse", "train", "validation")
+    )
+  
+  plot_xgb <- ggplot(history_xgb, aes(x = iter, y = RMSE, color = zbior))+
+    geom_line(linewidth = 0.8)+
+    geom_vline(xintercept = best_iter_xgb, linetype = "dashed", color = "black", linewidth = 0.8)+
+    scale_color_manual(values = c("train" = "#1f77b4", "validation" = "red"))+
+    labs(
+      x = "Liczba drzew",
+      y = "RMSE",
+      color = "Zbiór danych"
+    )+
+    theme_minimal()+
+    theme(legend.position = "bottom")
+  
+  return(plot_xgb)
+})
+
+Sys.sleep(30) # 30 sekund na odpoczynek
+```
+
+### Wyniki
+
+```{r}
+
+# Wczytanie modelu
+final_xgb <- xgb.load("modele/final_xgboost_model.ubj")
+
+preds_train_xgb <- predict(final_xgb, X_train_xgb) |> 
+  as.vector()
+
+train_predictions_xgb <- data.frame(
+  car_price = train90$car_price,
+  .pred = preds_train_xgb
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_xgb_train <- metryki(
+  train_predictions_xgb,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "XGBoost",
+         zbior = "Treningowy")
+
+preds_val_xgb <- predict(final_xgb, X_val_xgb) |> 
+  as.vector()
+
+val_predictions_xgb <- data.frame(
+  car_price = validation$car_price,
+  .pred = preds_val_xgb
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_xgb_val <- metryki(
+  val_predictions_xgb,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "XGBoost",
+         zbior = "Walidacyjny")
+
+preds_test_xgb <- predict(final_xgb, X_test_xgb) |> 
+  as.vector()
+
+test_predictions_xgb <- data.frame(
+  car_price = test$car_price,
+  .pred = preds_test_xgb
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_xgb_test <- metryki(
+  test_predictions_xgb,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "XGBoost",
+         zbior = "Testowy")
+
+
+wyniki_xgb <- bind_rows(wyniki_xgb_train, wyniki_xgb_val, wyniki_xgb_test) |>
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+wyniki_xgb
+```
+
+## LightGBM
+
+```{r}
+
+recipe_boosting <- recipe(car_price ~ ., data = train90) |>
+  
+  # Ochrona przed nowymi kategoriami
+  step_novel(all_nominal_predictors(), new_level = "inne") |>
+  
+  # Ochrona przed brakami danych
+  step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+  
+  # Usuwanie marek i modeli pojawiających się poniżej 10 razy
+  step_other(make, model, threshold = 10, other = "inne") |>
+  
+  # Usuwanie grup factorów o udziale poniżej 0.1%
+  step_other(all_nominal_predictors(), -make, -model, threshold = 0.001,
+             other = "inne") |>
+  
+  # Profilaktyczne usuwanie stałych kolumn
+  step_zv(all_predictors())
+
+
+recipe_prepped_boosting <- prep(recipe_boosting, training = train90)
+
+train_lgbm_baked <- bake(recipe_prepped_boosting, new_data = NULL)
+train_es_lgbm_baked <- bake(recipe_prepped_boosting, new_data = train_es)
+validation_lgbm_baked <- bake(recipe_prepped_boosting,
+                              new_data = validation)
+test_lgbm_baked <- bake(recipe_prepped_boosting, new_data = test)
+
+zmienne_kategoryczne <- train_lgbm_baked |> 
+  dplyr::select(-car_price) |> 
+  dplyr::select(where(is.factor)) |> 
+  colnames()
+
+X_train_lgbm <- train_lgbm_baked |> 
+  dplyr::select(-car_price) |> 
+  data.matrix()
+y_train_lgbm <- train_lgbm_baked$car_price
+
+X_es_lgbm <- train_es_lgbm_baked |> 
+  dplyr::select(-car_price) |> 
+  data.matrix()
+y_es_lgbm <- train_es_lgbm_baked$car_price
+
+X_val_lgbm <- validation_lgbm_baked |> 
+  dplyr::select(-car_price) |> 
+  data.matrix()
+y_val_lgbm <- validation_lgbm_baked$car_price
+
+X_test_lgbm <- test_lgbm_baked |> 
+  dplyr::select(-car_price) |> 
+  data.matrix()
+y_test_lgbm <- test_lgbm_baked$car_price
+
+
+train_lgbm <- lgb.Dataset(
+  data = X_train_lgbm,
+  label = y_train_lgbm,
+  categorical_feature = zmienne_kategoryczne,
+  params = list(feature_pre_filter = FALSE)
+)
+
+train_es_lgbm <- lgb.Dataset(
+  data = X_es_lgbm,
+  label = y_es_lgbm,
+  reference = train_lgbm
+)
+```
+
+```{r}
+
+callr::r(function()
+{
+  
+  # instalacja ParBayesianOptimization (jeśli nie ma)
+  if (!requireNamespace("ParBayesianOptimization", quietly = TRUE))
+  {
+    remotes::install_version(
+      "ParBayesianOptimization",
+      repos = "https://cloud.r-project.org"
+    )
+  }
+  
+  cores <- 6
+  
+  library(tidyverse)
+  library(ggplot2)
+  library(tidymodels)
+  library(ParBayesianOptimization)
+  library(lightgbm)
+  set.seed(2027)
+  
+  
+  split <- readRDS("dane/split.rds")
+  
+  train <- training(split)
+  validation <- validation(split)
+  test <- testing(split)
+  
+  cat("Train:       ", nrow(train), "\n",
+      "Validation:  ", nrow(validation), "\n",
+      "Test:        ", nrow(test), "\n", sep = "")
+  
+  set.seed(2027)
+  
+  train_split <- initial_split(
+    train,
+    prop = 0.9,
+    strata = car_price
+  )
+  
+  train90 <- training(train_split)
+  train_es <- testing(train_split)
+  
+  cat("Train:                ", nrow(train90), "\n",
+      "Train early stopping: ", nrow(train_es), "\n", sep = "")
+  
+  
+  
+  recipe_boosting <- recipe(car_price ~ ., data = train90) |>
+    
+    # Ochrona przed nowymi kategoriami
+    step_novel(all_nominal_predictors(), new_level = "inne") |>
+    
+    # Ochrona przed brakami danych
+    step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+    
+    # Usuwanie marek i modeli pojawiających się poniżej 10 razy
+    step_other(make, model, threshold = 10, other = "inne") |>
+    
+    # Usuwanie grup factorów o udziale poniżej 0.1%
+    step_other(all_nominal_predictors(), -make, -model, threshold = 0.001,
+               other = "inne") |>
+    
+    # Profilaktyczne usuwanie stałych kolumn
+    step_zv(all_predictors())
+  
+  
+  recipe_prepped_boosting <- prep(recipe_boosting, training = train90)
+  
+  train_lgbm_baked <- bake(recipe_prepped_boosting, new_data = NULL)
+  train_es_lgbm_baked <- bake(recipe_prepped_boosting, new_data = train_es)
+  validation_lgbm_baked <- bake(recipe_prepped_boosting,
+                                new_data = validation)
+  test_lgbm_baked <- bake(recipe_prepped_boosting, new_data = test)
+  
+  zmienne_kategoryczne <- train_lgbm_baked |> 
+    dplyr::select(-car_price) |> 
+    dplyr::select(where(is.factor)) |> 
+    colnames()
+  
+  X_train_lgbm <- train_lgbm_baked |> 
+    dplyr::select(-car_price) |> 
+    data.matrix()
+  y_train_lgbm <- train_lgbm_baked$car_price
+  
+  X_es_lgbm <- train_es_lgbm_baked |> 
+    dplyr::select(-car_price) |> 
+    data.matrix()
+  y_es_lgbm <- train_es_lgbm_baked$car_price
+  
+  X_val_lgbm <- validation_lgbm_baked |> 
+    dplyr::select(-car_price) |> 
+    data.matrix()
+  y_val_lgbm <- validation_lgbm_baked$car_price
+  
+  X_test_lgbm <- test_lgbm_baked |> 
+    dplyr::select(-car_price) |> 
+    data.matrix()
+  y_test_lgbm <- test_lgbm_baked$car_price
+  
+  
+  train_lgbm <- lgb.Dataset(
+    data = X_train_lgbm,
+    label = y_train_lgbm,
+    categorical_feature = zmienne_kategoryczne,
+    params = list(feature_pre_filter = FALSE)
+  )
+  
+  train_es_lgbm <- lgb.Dataset(
+    data = X_es_lgbm,
+    label = y_es_lgbm,
+    reference = train_lgbm
+  )
+  
+  
+  
+  zakresy_lgbm <- list(
+    learning_rate = c(-3, -1),
+    num_leaves = c(15L, 255L),
+    min_data_in_leaf = c(10L, 500L),
+    feature_fraction = c(0.3, 1)
+  )
+  
+  lgbm_parametry <- parameters(
+    learn_rate(range = c(-3, -1), trans = NULL),
+    num_leaves(range = c(15L, 255L)),
+    min_n(range = c(10L, 500L)),
+    mtry_prop(range = c(0.3, 1))
+  )
+  
+  set.seed(2027)
+  
+  init_grid_lgbm <- grid_space_filling(lgbm_parametry, size = 10) |> 
+    rename(
+      learning_rate = learn_rate,
+      num_leaves = num_leaves,
+      min_data_in_leaf = min_n,
+      feature_fraction = mtry_prop
+    ) |> 
+    as.data.frame()
+  
+  
+  funkcja_lgbm <- function(learning_rate, num_leaves, min_data_in_leaf,
+                           feature_fraction)
+  {
+    learning_rate <- 10^learning_rate
+    
+    model <- lgb.train(
+      data = train_lgbm,
+      valids = list(train = train_lgbm, early_stop = train_es_lgbm),
+      nrounds = 5000,
+      early_stopping_rounds = 50,
+      verbose = -1,
+      params = list(
+        objective = "regression",
+        metric = "rmse",
+        num_threads = cores,
+        seed = 2027,
+        feature_fraction_seed = 2027, # seed dla losowania cech
+        data_random_seed = 2027, # seed dla danych
+        deterministic = TRUE,
+        learning_rate = learning_rate,
+        num_leaves = num_leaves,
+        min_data_in_leaf = min_data_in_leaf,
+        feature_fraction = feature_fraction,
+        max_depth = -1,
+        feature_pre_filter = FALSE,
+        force_col_wise = TRUE
+      )
+    )
+    
+    predykcje_log <- predict(model, X_val_lgbm)
+    
+    predykcje <- exp(predykcje_log)
+    y_val <- exp(y_val_lgbm)
+    
+    mape <- mape_vec(y_val, predykcje)
+    
+    return(list(Score = -mape))
+  }
+  
+  gc()
+  set.seed(2027)
+  
+  czas_tuning_lgbm <- system.time({
+    wyniki_tuning_bayes_lgbm <- bayesOpt(
+      FUN = funkcja_lgbm,
+      bounds = zakresy_lgbm,
+      initGrid = init_grid_lgbm,
+      iters.n = 20,
+      acq = "ei",
+      verbose = 1
+    )
+  })
+  sekundy_tuning_lgbm <- as.numeric(czas_tuning_lgbm[3])
+  saveRDS(sekundy_tuning_lgbm, "czasy/sekundy_tuning_lgbm.rds")
+  
+  best_params_lgbm <- getBestPars(wyniki_tuning_bayes_lgbm)
+  
+  best_params_lgbm$learning_rate <- 10^(best_params_lgbm$learning_rate)
+  
+  saveRDS(best_params_lgbm, "tuning/best_params_lgbm.rds")
+  best_params_lgbm <- readRDS("tuning/best_params_lgbm.rds")
+  
+  
+  gc()
+  set.seed(2027)
+  
+  czas_fit_lgbm <- system.time({
+    final_lgbm <- lgb.train(
+      data = train_lgbm,
+      valids = list(train = train_lgbm, early_stop = train_es_lgbm),
+      nrounds = 5000,
+      early_stopping_rounds = 50,
+      verbose = -1,
+      params = list(
+        objective = "regression",
+        metric = "rmse",
+        num_threads = cores,
+        seed = 2027,
+        feature_fraction_seed = 2027, # seed dla losowania cech
+        data_random_seed = 2027, # seed dla danych
+        deterministic = TRUE,
+        learning_rate = best_params_lgbm$learning_rate,
+        num_leaves = best_params_lgbm$num_leaves,
+        min_data_in_leaf = best_params_lgbm$min_data_in_leaf,
+        feature_fraction = best_params_lgbm$feature_fraction,
+        max_depth = -1,
+        feature_pre_filter = FALSE,
+        force_col_wise = TRUE
+      )
+    )
+  })
+  sekundy_fit_lgbm <- as.numeric(czas_fit_lgbm[3])
+  saveRDS(sekundy_fit_lgbm, "czasy/sekundy_fit_lgbm.rds")
+  
+  liczba_drzew_lgbm <- final_lgbm$best_iter
+  cat("Optymalna liczba drzew dla LightGBM: ", liczba_drzew_lgbm)
+  
+  # Zapis modelu
+  lgb.save(final_lgbm, "modele/final_lightgbm_model.txt")
+  
+  history_train_final_lgbm <- unlist(final_lgbm$record_evals$train$rmse$eval)
+  history_val_final_lgbm <- unlist(final_lgbm$record_evals$early_stop$rmse$eval)
+  
+  best_iter_lgbm <- final_lgbm$best_iter
+  
+  history_lgbm <- data.frame(
+    iter = 1:length(history_train_final_lgbm),
+    train = history_train_final_lgbm,
+    validation = history_val_final_lgbm
+  ) |>
+    pivot_longer(cols = c(train, validation),
+                 names_to = "zbior",
+                 values_to = "RMSE")
+  
+  plot_lgbm <- ggplot(history_lgbm, aes(x = iter, y = RMSE, color = zbior))+
+    geom_line(linewidth = 0.8)+
+    geom_vline(xintercept = best_iter_lgbm, linetype = "dashed", color = "black", linewidth = 0.8)+
+    scale_color_manual(values = c("train" = "#1f77b4", "validation" = "red"))+
+    theme_minimal()+
+    labs(
+      x = "Liczba drzew",
+      y = "RMSE",
+      color = "Zbiór danych"
+    )+
+    theme(legend.position = "bottom")
+  
+  return(plot_lgbm)
+})
+
+Sys.sleep(30) # 30 sekund na odpoczynek
+```
+
+### Wyniki
+
+```{r}
+
+# Wczytanie modelu
+final_lgbm <- lgb.load("modele/final_lightgbm_model.txt")
+
+preds_train_lgbm <- predict(final_lgbm, X_train_lgbm) |> 
+  as.vector()
+
+train_predictions_lgbm <- data.frame(
+  car_price = train90$car_price,
+  .pred = preds_train_lgbm
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_lgbm_train <- metryki(
+  train_predictions_lgbm,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "LightGBM",
+         zbior = "Treningowy")
+
+preds_val_lgbm <- predict(final_lgbm, X_val_lgbm) |> 
+  as.vector()
+
+val_predictions_lgbm <- data.frame(
+  car_price = validation$car_price,
+  .pred = preds_val_lgbm
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_lgbm_val <- metryki(
+  val_predictions_lgbm,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "LightGBM",
+         zbior = "Walidacyjny")
+
+preds_test_lgbm <- predict(final_lgbm, X_test_lgbm) |> 
+  as.vector()
+
+test_predictions_lgbm <- data.frame(
+  car_price = test$car_price,
+  .pred = preds_test_lgbm
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_lgbm_test <- metryki(
+  test_predictions_lgbm,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "LightGBM",
+         zbior = "Testowy")
+
+
+wyniki_lgbm <- bind_rows(wyniki_lgbm_train, wyniki_lgbm_val, wyniki_lgbm_test) |>
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+wyniki_lgbm
+```
+
+## CatBoost
+
+```{r}
+
+recipe_boosting <- recipe(car_price ~ ., data = train90) |>
+  
+  # Ochrona przed nowymi kategoriami
+  step_novel(all_nominal_predictors(), new_level = "inne") |>
+  
+  # Ochrona przed brakami danych
+  step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+  
+  # Usuwanie marek i modeli pojawiających się poniżej 10 razy
+  step_other(make, model, threshold = 10, other = "inne") |>
+  
+  # Usuwanie grup factorów o udziale poniżej 0.1%
+  step_other(all_nominal_predictors(), -make, -model, threshold = 0.001,
+             other = "inne") |>
+  
+  # Profilaktyczne usuwanie stałych kolumn
+  step_zv(all_predictors())
+
+
+recipe_prepped_boosting <- prep(recipe_boosting, training = train90)
+
+train_catboost_baked <- bake(recipe_prepped_boosting, new_data = NULL)
+train_es_catboost_baked <- bake(recipe_prepped_boosting,
+                                new_data = train_es)
+validation_catboost_baked <- bake(recipe_prepped_boosting,
+                                  new_data = validation)
+test_catboost_baked <- bake(recipe_prepped_boosting, new_data = test)
+
+X_train_catboost <- train_catboost_baked |> 
+  dplyr::select(-car_price)
+y_train_catboost <- train_catboost_baked$car_price
+
+train_catboost <- catboost.load_pool(
+  data = X_train_catboost,
+  label = y_train_catboost
+)
+
+X_train_es_catboost <- train_es_catboost_baked |> 
+  dplyr::select(-car_price)
+y_train_es_catboost <- train_es_catboost_baked$car_price
+
+train_es_catboost <- catboost.load_pool(
+  data = X_train_es_catboost,
+  label = y_train_es_catboost
+)
+
+X_val_catboost <- validation_catboost_baked |> 
+  dplyr::select(-car_price)
+y_val_catboost <- validation_catboost_baked$car_price
+
+validation_catboost <- catboost.load_pool(
+  data = X_val_catboost,
+  label = y_val_catboost
+)
+
+X_test_catboost <- test_catboost_baked |> 
+  dplyr::select(-car_price)
+y_test_catboost <- test_catboost_baked$car_price
+
+test_catboost <- catboost.load_pool(
+  data = X_test_catboost,
+  label = y_test_catboost
+)
+```
+
+```{r}
+
+callr::r(function()
+{
+  
+  # instalacja ParBayesianOptimization (jeśli nie ma)
+  if (!requireNamespace("ParBayesianOptimization", quietly = TRUE))
+  {
+    remotes::install_version(
+      "ParBayesianOptimization",
+      repos = "https://cloud.r-project.org"
+    )
+  }
+  
+  # instalacja CatBoost (jeśli nie ma)
+  if (!requireNamespace("catboost", quietly = TRUE))
+  {
+    remotes::install_github("catboost/catboost",
+                            subdir = "catboost/R-package")
+  }
+  
+  cores <- 6
+  
+  library(tidyverse)
+  library(ggplot2)
+  library(tidymodels)
+  library(ParBayesianOptimization)
+  library(catboost)
+  set.seed(2027)
+  
+  
+  split <- readRDS("dane/split.rds")
+  
+  train <- training(split)
+  validation <- validation(split)
+  test <- testing(split)
+  
+  cat("Train:       ", nrow(train), "\n",
+      "Validation:  ", nrow(validation), "\n",
+      "Test:        ", nrow(test), "\n", sep = "")
+  
+  set.seed(2027)
+  
+  train_split <- initial_split(
+    train,
+    prop = 0.9,
+    strata = car_price
+  )
+  
+  train90 <- training(train_split)
+  train_es <- testing(train_split)
+  
+  cat("Train:                ", nrow(train90), "\n",
+      "Train early stopping: ", nrow(train_es), "\n", sep = "")
+  
+  
+  
+  recipe_boosting <- recipe(car_price ~ ., data = train90) |>
+    
+    # Ochrona przed nowymi kategoriami
+    step_novel(all_nominal_predictors(), new_level = "inne") |>
+    
+    # Ochrona przed brakami danych
+    step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+    
+    # Usuwanie marek i modeli pojawiających się poniżej 10 razy
+    step_other(make, model, threshold = 10, other = "inne") |>
+    
+    # Usuwanie grup factorów o udziale poniżej 0.1%
+    step_other(all_nominal_predictors(), -make, -model, threshold = 0.001,
+               other = "inne") |>
+    
+    # Profilaktyczne usuwanie stałych kolumn
+    step_zv(all_predictors())
+  
+  
+  recipe_prepped_boosting <- prep(recipe_boosting, training = train90)
+  
+  train_catboost_baked <- bake(recipe_prepped_boosting, new_data = NULL)
+  train_es_catboost_baked <- bake(recipe_prepped_boosting,
+                                  new_data = train_es)
+  validation_catboost_baked <- bake(recipe_prepped_boosting,
+                                    new_data = validation)
+  test_catboost_baked <- bake(recipe_prepped_boosting, new_data = test)
+  
+  X_train_catboost <- train_catboost_baked |> 
+    dplyr::select(-car_price)
+  y_train_catboost <- train_catboost_baked$car_price
+  
+  train_catboost <- catboost.load_pool(
+    data = X_train_catboost,
+    label = y_train_catboost
+  )
+  
+  X_train_es_catboost <- train_es_catboost_baked |> 
+    dplyr::select(-car_price)
+  y_train_es_catboost <- train_es_catboost_baked$car_price
+  
+  train_es_catboost <- catboost.load_pool(
+    data = X_train_es_catboost,
+    label = y_train_es_catboost
+  )
+  
+  X_val_catboost <- validation_catboost_baked |> 
+    dplyr::select(-car_price)
+  y_val_catboost <- validation_catboost_baked$car_price
+  
+  validation_catboost <- catboost.load_pool(
+    data = X_val_catboost,
+    label = y_val_catboost
+  )
+  
+  X_test_catboost <- test_catboost_baked |> 
+    dplyr::select(-car_price)
+  y_test_catboost <- test_catboost_baked$car_price
+  
+  test_catboost <- catboost.load_pool(
+    data = X_test_catboost,
+    label = y_test_catboost
+  )
+  
+  
+  zakresy_catboost <- list(
+    learning_rate = c(-3, -1),
+    depth = c(4L, 10L),
+    rsm = c(0.3, 1)
+  )
+  
+  parametry_catboost <- parameters(
+    learn_rate(range = c(-3, -1), trans = NULL),
+    tree_depth(range = c(4L, 10L)),
+    mtry_prop(range = c(0.3, 1))
+  )
+  
+  set.seed(2027)
+  
+  init_grid_catboost <- grid_space_filling(parametry_catboost, size = 10) |> 
+    rename(
+      learning_rate = learn_rate,
+      depth = tree_depth,
+      rsm = mtry_prop
+    ) |> 
+    as.data.frame()
+  
+  
+  funkcja_catboost <- function(learning_rate, depth, rsm)
+  {
+    learning_rate <- 10^learning_rate
+    
+    model <- catboost.train(
+      learn_pool = train_catboost,
+      test_pool = train_es_catboost, # early stopping
+      params = list(
+        loss_function = "RMSE",
+        eval_metric = "RMSE", # obserwowana metryka
+        iterations = 5000,
+        od_type = "Iter",
+        od_wait = 50,
+        use_best_model = TRUE,
+        thread_count = cores,
+        random_seed = 2027,
+        verbose = 0,
+        learning_rate = learning_rate,
+        depth = depth,
+        rsm = rsm,
+        allow_writing_files = FALSE # brak zapisu danych na dysku przy tuningu
+      )
+    )
+    
+    predykcje_log <- predict(model, validation_catboost)
+    
+    predykcje <- exp(predykcje_log)
+    y_val_real <- exp(y_val_catboost)
+    
+    mape <- mape_vec(y_val_real, predykcje)
+    
+    return(list(Score = -mape))
+  }
+  
+  gc()
+  set.seed(2027)
+  
+  czas_tuning_catboost <- system.time({
+    wyniki_tuning_bayes_catboost <- bayesOpt(
+      FUN = funkcja_catboost,
+      bounds = zakresy_catboost,
+      initGrid = init_grid_catboost,
+      iters.n = 20,
+      acq = "ei",
+      verbose = 1
+    )
+  })
+  sekundy_tuning_catboost <- as.numeric(czas_tuning_catboost[3])
+  saveRDS(sekundy_tuning_catboost, "czasy/sekundy_tuning_catboost.rds")
+  
+  best_params_catboost <- getBestPars(wyniki_tuning_bayes_catboost)
+  
+  best_params_catboost$learning_rate <- 10^(best_params_catboost$learning_rate)
+  
+  saveRDS(best_params_catboost, "tuning/best_params_catboost.rds")
+  best_params_catboost <- readRDS("tuning/best_params_catboost.rds")
+  
+  # usuwanie (jeśli istnieje) starego folderu z info o treningu catboost
+  if (dir.exists("catboost_info")) unlink("catboost_info", recursive = TRUE)
+  
+  gc()
+  set.seed(2027)
+  
+  czas_fit_catboost <- system.time({
+    final_catboost <- catboost.train(
+      learn_pool = train_catboost,
+      test_pool = train_es_catboost, # early stopping
+      params = list(
+        loss_function = "RMSE",
+        eval_metric = "RMSE", # obserwowana metryka
+        iterations = 5000,
+        od_type = "Iter",
+        od_wait = 50,
+        use_best_model = TRUE,
+        thread_count = cores,
+        random_seed = 2027,
+        verbose = 0,
+        learning_rate = best_params_catboost$learning_rate,
+        depth = best_params_catboost$depth,
+        rsm = best_params_catboost$rsm
+      )
+    )
+  })
+  sekundy_fit_catboost <- as.numeric(czas_fit_catboost[3])
+  saveRDS(sekundy_fit_catboost, "czasy/sekundy_fit_catboost.rds")
+  
+  liczba_drzew_catboost <- final_catboost$tree_count
+  cat("Optymalna liczba drzew dla CatBoost: ", liczba_drzew_catboost)
+  
+  path_train <- "catboost_info/learn_error.tsv"
+  path_val <- "catboost_info/test_error.tsv"
+  
+  
+  log_train <- read.delim(path_train)
+  log_val <- read.delim(path_val)
+  
+  history_train_final_catboost <- log_train$RMSE
+  history_val_final_catboost <- log_val$RMSE
+  
+  best_idx <- which.min(history_val_final_catboost)
+  best_iter_catboost <- log_val$iter[best_idx] + 1 # numeracja od 0
+  
+  # Zapis modelu
+  catboost.save_model(final_catboost, "modele/final_catboost_model.cbm")
+  
+  history_catboost <- data.frame(
+    iter = log_val$iter + 1,
+    train = history_train_final_catboost,
+    validation = history_val_final_catboost
+  ) |> 
+    pivot_longer(
+      cols = c(train, validation),
+      names_to = "zbior",
+      values_to = "RMSE"
+    )
+  
+  plot_catboost <- ggplot(history_catboost, aes(x = iter, y = RMSE, color = zbior))+
+    geom_line(linewidth = 0.8)+
+    geom_vline(xintercept = best_iter_catboost, linetype = "dashed", color = "black", linewidth = 0.8)+
+    scale_color_manual(values = c("train" = "#1f77b4", "validation" = "red"))+
+    theme_minimal()+
+    labs(
+      x = "Liczba drzew",
+      y = "RMSE",
+      color = "Zbiór danych",
+      title = "Krzywa uczenia modelu CatBoost"
+    )+
+    theme(legend.position = "bottom")
+  
+  return(plot_catboost)
+})
+
+Sys.sleep(30) # 30 sekund na odpoczynek
+```
+
+### Wyniki
+
+```{r}
+
+# Wczytanie modelu
+final_catboost <- catboost.load_model("modele/final_catboost_model.cbm")
+
+preds_train_catboost <- catboost.predict(
+  model = final_catboost,
+  pool = train_catboost
+) |> 
+  as.vector()
+
+train_predictions_catboost <- data.frame(
+  car_price = train90$car_price,
+  .pred = preds_train_catboost
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_catboost_train <- metryki(
+  train_predictions_catboost,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "CatBoost",
+         zbior = "Treningowy")
+
+preds_val_catboost <- catboost.predict(
+  model = final_catboost,
+  pool = validation_catboost
+) |> 
+  as.vector()
+
+val_predictions_catboost <- data.frame(
+  car_price = validation$car_price,
+  .pred = preds_val_catboost
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_catboost_val <- metryki(
+  val_predictions_catboost,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "CatBoost",
+         zbior = "Walidacyjny")
+
+preds_test_catboost <- catboost.predict(
+  model = final_catboost,
+  pool = test_catboost
+) |> 
+  as.vector()
+
+test_predictions_catboost <- data.frame(
+  car_price = test$car_price,
+  .pred = preds_test_catboost
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_catboost_test <- metryki(
+  test_predictions_catboost,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "CatBoost",
+         zbior = "Testowy")
+
+
+wyniki_catboost <- bind_rows(wyniki_catboost_train, wyniki_catboost_val, 
+                             wyniki_catboost_test) |>
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+wyniki_catboost
+```
+
+## Sieć neuronowa MLP
+
+```{r}
+
+recipe_mlp <- recipe(car_price ~ ., data = train90) |>
+  
+  # Ochrona przed nowymi kategoriami
+  step_novel(all_nominal_predictors(), new_level = "inne") |>
+  
+  # Ochrona przed brakami danych
+  step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+  
+  # Target encoding dla marki i modelu przez generalizowany model mieszany
+  step_lencode_mixed(make, model, outcome = vars(car_price)) |>
+  
+  # Grupowanie do kategorii "inne" dla rzadkich kategorii poniżej 0,1%
+  step_other(all_nominal_predictors(), threshold = 0.001, other = "inne") |>
+  
+  # Zamiana pozostałych zmiennych kategorycznych na zmienne binarne
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) |>
+  
+  # Profilaktyczne usuwanie stałych kolumn
+  step_zv(all_predictors()) |> 
+  
+  # Normalizacja predyktorów numerycznych
+  step_normalize(all_numeric_predictors())
+
+recipe_prepped_mlp <- prep(recipe_mlp, training = train90)
+
+train_mlp <- bake(recipe_prepped_mlp, new_data = NULL)
+train_es_mlp <- bake(recipe_prepped_mlp, new_data = train_es)
+val_mlp <- bake(recipe_prepped_mlp, new_data = validation)
+test_mlp <- bake(recipe_prepped_mlp, new_data = test)
+
+X_train <- train_mlp |> 
+  dplyr::select(-car_price) |> 
+  as.matrix()
+y_train <- train_mlp$car_price
+
+X_train_es <- train_es_mlp |> 
+  dplyr::select(-car_price) |> 
+  as.matrix()
+y_train_es <- train_es_mlp$car_price
+
+X_val <- val_mlp |> 
+  dplyr::select(-car_price) |> 
+  as.matrix()
+y_val <- val_mlp$car_price
+
+X_test <- test_mlp |> 
+  dplyr::select(-car_price) |> 
+  as.matrix()
+y_test <- test_mlp$car_price
+```
+
+```{r}
+
+wykresy_mlp <- callr::r(function(python_path)
+{
+  # ścieżka do pythona, aby mieć taką samą wersję pythona w callr:r()
+  Sys.setenv(RETICULATE_PYTHON = python_path)
+  reticulate::use_python(python_path, required = TRUE)
+  
+  # instalacja ParBayesianOptimization (jeśli nie ma)
+  if (!requireNamespace("ParBayesianOptimization", quietly = TRUE))
+  {
+    remotes::install_version(
+      "ParBayesianOptimization",
+      repos = "https://cloud.r-project.org"
+    )
+  }
+  
+  # liczba rdzeni do budowy modeli, w moim przypadku 6
+  cores <- 6
+  
+  Sys.setenv(TF_ENABLE_ONEDNN_OPTS = "0") # brak różnic w dokładności obliczeń
+  Sys.setenv(PYTHONHASHSEED = "2027") # ziarno dla Python
+  Sys.setenv(TF_CPP_MIN_LOG_LEVEL = "3") # tylko logi o błędach krytycznych tensorflow
+  Sys.setenv(OMP_NUM_THREADS = as.character(cores)) # ograniczenie do 6 rdzeni
+  Sys.setenv(TF_NUM_INTRAOP_THREADS = as.character(cores)) # 6 rdzeni do obliczeń mlp
+  Sys.setenv(TF_NUM_INTEROP_THREADS = "1") # determinizm niezależnych obliczeń
+  
+  library(tidyverse)
+  library(ggplot2)
+  library(tidymodels)
+  library(embed)
+  library(ParBayesianOptimization)
+  library(tensorflow)
+  library(keras3)
+  
+  # determinizm silnika tensorflow
+  tf$config$experimental$enable_op_determinism()
+  
+  set.seed(2027)
+  keras3::set_random_seed(2027)
+  
+  
+  split <- readRDS("dane/split.rds")
+  
+  train <- training(split)
+  validation <- validation(split)
+  test <- testing(split)
+  
+  cat("Train:       ", nrow(train), "\n",
+      "Validation:  ", nrow(validation), "\n",
+      "Test:        ", nrow(test), "\n", sep = "")
+  
+  set.seed(2027)
+  
+  train_split <- initial_split(
+    train,
+    prop = 0.9,
+    strata = car_price
+  )
+  
+  train90 <- training(train_split)
+  train_es <- testing(train_split)
+  
+  cat("Train:                ", nrow(train90), "\n",
+      "Train early stopping: ", nrow(train_es), "\n", sep = "")
+  
+  
+  recipe_mlp <- recipe(car_price ~ ., data = train90) |>
+    
+    # Ochrona przed nowymi kategoriami
+    step_novel(all_nominal_predictors(), new_level = "inne") |>
+    
+    # Ochrona przed brakami danych
+    step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+    
+    # Target encoding dla marki i modelu przez generalizowany model mieszany
+    step_lencode_mixed(make, model, outcome = vars(car_price)) |>
+    
+    # Grupowanie do kategorii "inne" dla rzadkich kategorii poniżej 0,1%
+    step_other(all_nominal_predictors(), threshold = 0.001, other = "inne") |>
+    
+    # Zamiana pozostałych zmiennych kategorycznych na zmienne binarne
+    step_dummy(all_nominal_predictors(), one_hot = TRUE) |>
+    
+    # Profilaktyczne usuwanie stałych kolumn
+    step_zv(all_predictors()) |> 
+    
+    # Normalizacja predyktorów numerycznych
+    step_normalize(all_numeric_predictors())
+  
+  recipe_prepped_mlp <- prep(recipe_mlp, training = train90)
+  
+  train_mlp <- bake(recipe_prepped_mlp, new_data = NULL)
+  train_es_mlp <- bake(recipe_prepped_mlp, new_data = train_es)
+  val_mlp <- bake(recipe_prepped_mlp, new_data = validation)
+  test_mlp <- bake(recipe_prepped_mlp, new_data = test)
+  
+  X_train <- train_mlp |> 
+    dplyr::select(-car_price) |> 
+    as.matrix()
+  y_train <- train_mlp$car_price
+  
+  X_train_es <- train_es_mlp |> 
+    dplyr::select(-car_price) |> 
+    as.matrix()
+  y_train_es <- train_es_mlp$car_price
+  
+  X_val <- val_mlp |> 
+    dplyr::select(-car_price) |> 
+    as.matrix()
+  y_val <- val_mlp$car_price
+  
+  X_test <- test_mlp |> 
+    dplyr::select(-car_price) |> 
+    as.matrix()
+  y_test <- test_mlp$car_price
+  
+  
+  # funkcja do resetowania stanu
+  reset_mlp_fun <- function(seed = 2027)
+  {
+    keras3::clear_session() # czyści graf sieci i nazwy warstw
+    reticulate::import("gc")$collect() # czyści pamięć Python przez reticulate
+    gc()
+    set.seed(seed)
+    keras3::set_random_seed(seed)
+  }
+  
+  
+  
+  build_mlp <- function(input_shape, num_layers, first_layer_units, 
+                        width_multiplier, learning_rate, use_batch_norm)
+  {
+    # reset
+    reset_mlp_fun()
+    
+    units <- integer(num_layers)
+    current_units <- first_layer_units
+    for (i in 1:num_layers)
+    {
+      units[i] <- max(8L, min(1024L, as.integer(round(current_units)))) # co najmniej 8 i maksymalnie 1024 neuronów w każdej warstwie ukrytej
+      current_units <- current_units * width_multiplier
+    }
+    
+    model <- keras_model_sequential(input_shape = c(input_shape))
+    
+    for (u in units)
+    {
+      if (isTRUE(use_batch_norm))
+      {
+        model <- model |> 
+          layer_dense(units = u, use_bias = FALSE) |> # wyłączenie zbędnego biasu przy batch normalization dla redukcji liczby parametrów w treningu
+          layer_batch_normalization() |> 
+          layer_activation(activation = "relu")
+      }
+      else
+      {
+        model <- model |> 
+          layer_dense(units = u, activation = "relu")
+      }
+    }
+    
+    model <- model |> 
+      layer_dense(units = 1)
+    
+    model |> 
+      compile(
+        optimizer = optimizer_adam(learning_rate = learning_rate),
+        loss = "mse"
+      )
+    
+    return(model)
+  }
+  
+  
+  zakresy_mlp <- list(
+    num_layers = c(3L, 5L),
+    first_layer_units = c(5, 10), # skala log2 (od 32 do 1024 neuronów)
+    width_multiplier = c(0.5, 1.5),
+    learning_rate = c(-4, -2), # skala log10 (od 0.0001 do 0.01)
+    use_batch_norm = c(0L, 1L)
+  )
+  
+  mlp_parametry <- parameters(list(
+    num_layers = new_quant_param(type = "integer",
+                                 range = c(3L, 5L),
+                                 inclusive = c(TRUE, TRUE)),
+    first_layer_units = new_quant_param(type = "double",
+                                        range = c(5, 10), # skala log2
+                                        inclusive = c(TRUE, TRUE)),
+    width_multiplier = new_quant_param(type = "double",
+                                       range = c(0.5, 1.5),
+                                       inclusive = c(TRUE, TRUE)),
+    learning_rate = new_quant_param(type = "double",
+                                    range = c(-4, -2), # skala log10
+                                    inclusive = c(TRUE, TRUE)),
+    use_batch_norm = new_quant_param(type = "integer",
+                                     range = c(0L, 1L),
+                                     inclusive = c(TRUE, TRUE))
+  ))
+  
+  set.seed(2027)
+  
+  init_grid_mlp <- grid_space_filling(mlp_parametry, size = 10) |> 
+    as.data.frame()
+  
+  
+  funkcja_mlp <- function(num_layers, first_layer_units, width_multiplier,
+                          learning_rate, use_batch_norm)
+  {
+    
+    num_layers <- as.integer(round(num_layers))
+    first_layer_units <- as.integer(round(2^first_layer_units))
+    use_batch_norm <- as.logical(use_batch_norm > 0.5)
+    learning_rate <- 10^learning_rate
+    
+    model <- build_mlp(
+      input_shape = ncol(X_train),
+      num_layers = num_layers,
+      first_layer_units = first_layer_units,
+      width_multiplier = width_multiplier,
+      learning_rate = learning_rate,
+      use_batch_norm = use_batch_norm
+    )
+    
+    model |> 
+      fit(
+        x = X_train,
+        y = y_train,
+        validation_data = list(X_train_es, y_train_es),
+        epochs = 500,
+        batch_size = 256,
+        callbacks = list(
+          callback_reduce_lr_on_plateau(
+            monitor = "val_loss",
+            factor = 0.5, # redukcja learning rate o połowę
+            patience = 10,
+            cooldown = 5, # 5 epok cooldownu po redukcji learning rate
+            min_delta = 1e-4, # minimalna poprawa o 0.0001, inaczej odliczanie
+            min_lr = 1e-5,
+            verbose = 0
+          ),
+          callback_early_stopping(
+            monitor = "val_loss",
+            patience = 25, # czas na ponad 2 redukcje learning rate
+            min_delta = 1e-4, # minimalna poprawa o 0.0001, inaczej odliczanie
+            restore_best_weights = TRUE
+          )
+        ),
+        verbose = 0
+      )
+    
+    predykcje_log <- predict(model, X_val, verbose = 0) |> 
+      as.vector()
+    predykcje <- exp(predykcje_log)
+    y_val_real <- exp(y_val)
+    
+    mape <- mape_vec(y_val_real, predykcje)
+    return(list(Score = -mape))
+  }
+  
+  reset_mlp_fun()
+  
+  czas_tuning_mlp <- system.time({
+    wyniki_tuning_mlp <- bayesOpt(
+      FUN = funkcja_mlp,
+      bounds = zakresy_mlp,
+      initGrid = init_grid_mlp,
+      iters.n = 20,
+      acq = "ei",
+      verbose = 1
+    )
+  })
+  sekundy_tuning_mlp <- as.numeric(czas_tuning_mlp[3])
+  saveRDS(sekundy_tuning_mlp, "czasy/sekundy_tuning_mlp.rds")
+  
+  best_params_mlp <- getBestPars(wyniki_tuning_mlp)
+  
+  best_params_mlp$learning_rate <- 10^(best_params_mlp$learning_rate)
+  best_params_mlp$first_layer_units <- as.integer(round(
+    2^(best_params_mlp$first_layer_units)
+  ))
+  
+  saveRDS(best_params_mlp, "tuning/best_params_mlp.rds")
+  best_params_mlp <- readRDS("tuning/best_params_mlp.rds")
+  
+  
+  num_layers <- best_params_mlp$num_layers
+  first_layer_units <- best_params_mlp$first_layer_units
+  width_multiplier = best_params_mlp$width_multiplier
+  learning_rate <- best_params_mlp$learning_rate
+  use_batch_norm <- as.logical(best_params_mlp$use_batch_norm > 0.5)
+  
+  model_mlp <- build_mlp(
+    input_shape = ncol(X_train),
+    num_layers = num_layers,
+    first_layer_units = first_layer_units,
+    width_multiplier = width_multiplier,
+    learning_rate = learning_rate,
+    use_batch_norm = use_batch_norm
+  )
+  
+  czas_fit_mlp <- system.time({
+    history_mlp <- model_mlp |> 
+      fit(
+        x = X_train,
+        y = y_train,
+        validation_data = list(X_train_es, y_train_es),
+        epochs = 500,
+        batch_size = 256,
+        callbacks = list(
+          callback_reduce_lr_on_plateau(
+            monitor = "val_loss",
+            factor = 0.5, # redukcja learning rate o połowę
+            patience = 10,
+            cooldown = 5, # 5 epok cooldownu po redukcji learning rate
+            min_delta = 1e-4, # minimalna poprawa o 0.0001, inaczej odliczanie
+            min_lr = 1e-5,
+            verbose = 0
+          ),
+          callback_early_stopping(
+            monitor = "val_loss",
+            patience = 25, # czas na ponad 2 redukcje learning rate
+            min_delta = 1e-4, # minimalna poprawa o 0.0001, inaczej odliczanie
+            restore_best_weights = TRUE
+          )
+        ),
+        verbose = 0
+      )
+  })
+  sekundy_fit_mlp <- as.numeric(czas_fit_mlp[3])
+  saveRDS(sekundy_fit_mlp, "czasy/sekundy_fit_mlp.rds")
+  
+  # zapis modelu do pliku .keras
+  keras3::save_model(model_mlp, "modele/model_mlp.keras", overwrite = TRUE)
+  
+  df_history <- data.frame(
+    epoch      = 1:length(history_mlp$metrics$loss),
+    train      = as.numeric(history_mlp$metrics$loss),
+    validation = as.numeric(history_mlp$metrics$val_loss)
+  ) |> 
+    pivot_longer(cols = c(train, validation),
+                 names_to = "zbior",
+                 values_to = "loss")
+  
+  best_epoch_mlp <- which.min(history_mlp$metrics$val_loss)
+  
+  plot_mlp <- ggplot(df_history, aes(x = epoch, y = loss, color = zbior))+
+    geom_line(linewidth = 0.8)+
+    geom_vline(xintercept = best_epoch_mlp, linetype = "dashed", color = "black", linewidth = 0.8)+
+    scale_color_manual(values = c("train" = "#1f77b4", "validation" = "red"))+
+    theme_minimal()+
+    labs(
+      x = "Liczba epok",
+      y = "Funkcja straty MSE",
+      color = "Zbiór danych",
+      title = "Krzywa uczenia modelu MLP"
+    )+
+    theme(legend.position = "bottom")
+  
+  return(list(history = history_mlp, plot_lr = plot(history_mlp), plot_mlp = plot_mlp))
+},
+args = list(python_path = python) # ścieżka do pythona z głównej sesji
+)
+
+best_epoch_mlp <- which.min(wykresy_mlp$history$metrics$val_loss)
+cat("Najlepsza liczba epok treningu MLP: ", best_epoch_mlp)
+wykresy_mlp$plot_lr
+wykresy_mlp$plot_mlp
+
+Sys.sleep(30) # 30 sekund na odpoczynek
+```
+
+### Wyniki
+
+```{r}
+
+# wczytanie modelu
+model_mlp <- keras3::load_model("modele/model_mlp.keras")
+
+preds_train_mlp <- predict(model_mlp, X_train, verbose = 0) |> 
+  as.vector()
+
+train_predictions_mlp <- data.frame(
+  car_price = y_train,
+  .pred = preds_train_mlp
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_mlp_train <- metryki(
+  train_predictions_mlp,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "MLP",
+         zbior = "Treningowy")
+
+preds_val_mlp <- predict(model_mlp, X_val, verbose = 0) |> 
+  as.vector()
+
+val_predictions_mlp <- data.frame(
+  car_price = y_val,
+  .pred = preds_val_mlp
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_mlp_val <- metryki(
+  val_predictions_mlp, 
+  truth = price_gbp, 
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "MLP", 
+         zbior = "Walidacyjny")
+
+preds_test_mlp <- predict(model_mlp, X_test, verbose = 0) |> 
+  as.vector()
+
+test_predictions_mlp <- data.frame(
+  car_price = y_test,
+  .pred = preds_test_mlp
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_mlp_test <- metryki(
+  test_predictions_mlp, 
+  truth = price_gbp, 
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "MLP", 
+         zbior = "Testowy")
+
+wyniki_mlp <- bind_rows(wyniki_mlp_train, wyniki_mlp_val, wyniki_mlp_test) |>
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+wyniki_mlp
+```
+
+# Podsumowanie wyników
+
+```{r}
+
+wyniki <- bind_rows(wyniki_elastic_net_test,
+                    wyniki_rf_test,
+                    wyniki_xgb_test,
+                    wyniki_lgbm_test,
+                    wyniki_catboost_test,
+                    wyniki_mlp_test) |> 
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+print(wyniki)
+```

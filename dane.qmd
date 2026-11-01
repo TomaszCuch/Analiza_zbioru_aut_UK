@@ -1,0 +1,2928 @@
+---
+title: "Dane"
+author: "Tomasz Cuch"
+format: html
+embed-resources: true
+self-contained-math: true
+editor: visual
+toc: true
+toc-location: left
+toc-title: "Spis treści"
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r, message=FALSE, warning=FALSE}
+
+library(tidyverse)
+library(forcats)
+library(ggplot2)
+library(scales)
+library(patchwork)
+library(moments)
+library(corrplot)
+library(mice)
+library(tidymodels)
+
+set.seed(2027)
+```
+
+```{r}
+
+# pojedynczy obrazek
+width_single <- 14
+height_single <- 8.5
+
+# 2 kolumny
+width_2 <- 7
+height_2 <- 6
+
+# 2 x 2
+width_2x2 <- 7
+height_2x2 <- 5
+
+unit <- "cm"
+```
+
+# Dane
+
+Wczytanie danych
+
+```{r}
+
+dane <- read.csv("dane/all_car_adverts.csv",
+                 header = T,
+                 sep=",",
+                 na.strings = c("", "?", "NA", "N/A"))
+```
+
+**Liczba wierszy:**
+
+```{r}
+
+nrow(dane)
+```
+
+**Liczba kolumn:**
+
+```{r}
+
+ncol(dane)
+```
+
+**Struktura danych:**
+
+```{r}
+
+str(dane)
+```
+
+W nazwie kolumny `feul_type` jest literówka, skorygowana zostanie jej nazwa na **`fuel_type`**. Kolumny `num_owner` oraz `year` zamienione zostaną na typ integer w celu zwiększenia poprawności typów danych, a zmienne kategoryczne i binarne na typ kategoryczny.
+
+**Przegląd danych**
+
+```{r}
+
+summary(dane)
+```
+
+Kolumna `year` posiada nierealną wartość dla minimalnego roku produkcji równą **32**.
+
+Zmienna `engine_size` zawiera prawdopodobnie błędne wartości skrajne mocy: **1 – 2460**.
+
+## Usuwanie zbędnych lub powielających informacje kolumn
+
+Kolumny te nie są potrzebne w analizie – zawierają nieużyteczne lub powielone informacje z innych kolumn.
+
+```{r}
+
+dane <- dane |> 
+  dplyr::select(-c(X, car_title, car_specs, car_seller_rating,
+                   car_seller_location, reg, discounted))
+```
+
+## Zmiana nazwy kolumny `feul_type` na `fuel_type`
+
+Dla jasności w nazewnictwie nazwa kolumny `feul_type` zostaje zmieniona na `fuel_type`.
+
+```{r}
+
+dane <- dane |> 
+  rename(fuel_type = feul_type)
+```
+
+## Zmiana kolumn `num_owner` i `year` na typ integer
+
+```{r}
+
+dane$num_owner <- as.integer(dane$num_owner)
+dane$year <- as.integer(dane$year)
+```
+
+## Zmiana `body_type`, `transmission`, `fuel_type` i zmiennych binarnych na typ factor
+
+```{r}
+
+dane$body_type <- as.factor(dane$body_type)
+dane$transmission <- as.factor(dane$transmission)
+dane$fuel_type <- as.factor(dane$fuel_type)
+dane$ulez <- as.factor(dane$ulez)
+dane$full_service <- as.factor(dane$full_service)
+dane$part_service <- as.factor(dane$part_service)
+dane$part_warranty <- as.factor(dane$part_warranty)
+dane$full_dealership <- as.factor(dane$full_dealership)
+dane$first_year_road_tax <- as.factor(dane$first_year_road_tax)
+dane$brand_new <- as.factor(dane$brand_new)
+dane$finance_available <- as.factor(dane$finance_available)
+```
+
+### Zmiana nazw w zmiennych kategorycznych na polskie
+
+`body_type`
+
+```{r}
+
+dane <- dane |>
+  mutate(
+    body_type = fct_recode(
+      body_type,
+      "karawan" = "hearse",
+      "multivan" = "window van",
+      "pick-up 4-drzwiowy" = "pickup double cab car",
+      "furgon" = "panel van",
+      "limuzyna" = "limousine",
+      "kamper" = "camper",
+      "furgonetka osobowa" = "car derived van",
+      "minibus" = "minibus",
+      "kombivan" = "combi van",
+      "pick-up 2-drzwiowy" = "pickup",
+      "minivan" = "mpv",
+      "kabriolet" = "convertible",
+      "coupé" = "coupe",
+      "kombi" = "estate",
+      "sedan" = "saloon",
+      "hatchback" = "hatchback",
+      "SUV" = "suv",
+    )
+  )
+```
+
+`transmission`
+
+```{r}
+
+dane <- dane |>
+  mutate(
+    transmission = fct_recode(
+      transmission,
+      "automatyczna" = "automatic",
+      "manualna" = "manual"
+    )
+  )
+```
+
+`fuel_type`
+
+```{r}
+
+dane <- dane |>
+  mutate(
+    fuel_type = fct_recode(
+      fuel_type,
+      "dwupaliwowy" = "bi fuel",
+      "diesel" = "diesel",
+      "hybryda diesel" = "diesel hybrid",
+      "hybryda plug-in diesel" = "diesel plug-in hybrid",
+      "elektryczny" = "electric",
+      "wodór" = "hydrogen",
+      "benzyna" = "petrol",
+      "hybryda benzyna" = "petrol hybrid",
+      "hybryda plug-in benzyna" = "petrol plug-in hybrid"
+    )
+  )
+```
+
+## Zamiana jednostek mocy "bph" i "ps" na jednostkę "kW"
+
+Przeliczniki:
+
+1 PS $\approx 0.7355$ kW
+
+1 BHP $\approx 0.7457$ kW
+
+Źródło: <https://www.nist.gov/pml/special-publication-811/nist-guide-si-appendix-b-conversion-factors/nist-guide-si-appendix-b8>
+
+Utworzenie nowej kolumny z mocą silnika w kilowatach.
+
+```{r}
+
+dane <- dane |>
+  mutate(engine_kW = case_when(
+    engine_size_unit == "ps" ~ engine_size * 0.7355,  # PS → kW
+    engine_size_unit == "bhp" ~ engine_size * 0.7457, # BHP → kW
+    is.na(engine_size_unit) ~ NA_real_                # NA → NA
+  ))
+```
+
+Nowa kolumna `engine_kW` z mocą silnika w kilowatach zostaje zaokrąglona dla większej czytelności, a stare kolumny `engine_size` i `engine_size_unit` zostają usunięte ze zbioru danych, gdyż są już zbędne.
+
+```{r}
+
+dane$engine_kW <- round(dane$engine_kW)
+
+dane <- dane |> 
+  dplyr::select(-c(engine_size, engine_size_unit))
+```
+
+## Duplikaty
+
+```{r}
+
+sum(duplicated(dane))
+```
+
+## Pierwotne braki danych
+
+```{r}
+
+na1 <- dane |>
+  summarise(across(everything(), ~ mean(is.na(.)))) |>
+  pivot_longer(everything(),
+               names_to = "kolumna",
+               values_to = "procent_na")
+
+na1_plot <- na1 |>
+  dplyr::filter(procent_na > 0) |>
+  arrange(procent_na) |>
+  mutate(
+    kolumna = factor(kolumna, levels = unique(kolumna)),
+  )
+
+b1 <- ggplot(na1_plot, aes(y = kolumna))+
+  geom_col(aes(x = procent_na), fill = "black", na.rm = TRUE)+
+  geom_text(
+    aes(
+      x = procent_na,
+      label = case_when(
+        procent_na < 0.001 ~ "< 0,1%",
+        TRUE ~ percent(procent_na, accuracy = 0.01, decimal.mark = ",")
+      )
+    ),
+    vjust = 0.5,
+    hjust = -0.08,
+    size = 3,
+    fontface = "bold"
+  )+
+  scale_x_continuous(
+    labels = percent,
+    expand = expansion(mult = c(0, 0.15))
+  )+
+  labs(
+    y = "",
+    x = "Braki danych [%]"
+  )+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7),
+    axis.text.y = element_text(color = "black", size = 8)
+  )
+b1
+
+ggsave(
+  filename = "template_latex/rys/b1.pdf",
+  plot = b1,
+  width = width_single,
+  height = height_single,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+## Wizualizacje oryginalnych zmiennych
+
+### `car_price`
+
+Ze względu na prawostronną skośność rozkładu cen samochodów, w wizualizacji porównano rozkłady oryginalnej ceny i logarytmu naturalnego ceny.
+
+```{r}
+
+dane_cena <- dane |> 
+  dplyr::filter(!is.na(car_price))
+
+mediana <- median(dane_cena$car_price, na.rm = TRUE)
+srednia <- mean(dane_cena$car_price, na.rm = TRUE)
+
+mediana_log <- median(log(dane_cena$car_price), na.rm = TRUE)
+srednia_log <- mean(log(dane_cena$car_price), na.rm = TRUE)
+
+price1 <- dane_cena |> 
+  ggplot(aes(x = car_price))+
+  geom_density(fill = "#f4a261", alpha = 0.6,
+               color = "black", linewidth = 0.2)+
+  geom_vline(xintercept = mediana, color = "#d10015", linetype = "solid", linewidth = 0.5)+
+  geom_vline(xintercept = srednia, color = "#0802bf", linetype = "dashed", linewidth = 0.5)+
+  scale_x_continuous(
+    breaks = c(0, 1e6, 2e6, 3e6),
+    labels = c("0", "1 mln", "2 mln", "3 mln")
+  )+
+  labs(
+    x = "Cena [GBP]"
+  )+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank()
+  )
+price1
+
+
+# Logarytm naturalny ceny
+price2 <- dane_cena |> 
+  ggplot(aes(x = log(car_price)))+
+  geom_density(fill = "#f4a261", alpha = 0.6,
+               color = "black", linewidth = 0.2)+
+  geom_vline(xintercept = mediana_log, color = "#d10015", linetype = "solid", linewidth = 0.5)+
+  geom_vline(xintercept = srednia_log, color = "#0802bf", linetype = "dashed", linewidth = 0.5)+
+  labs(
+    x = "Logarytm naturalny ceny"
+  )+
+  scale_x_continuous(labels = scales::label_number(decimal.mark = ","))+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7),
+    axis.text.y  = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank()
+  )
+price2
+
+ggsave(
+  filename = "template_latex/rys/price1.pdf",
+  plot = price1,
+  width = width_2,
+  height = height_2,
+  units = unit,
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = "template_latex/rys/price2.pdf",
+  plot = price2,
+  width = width_2,
+  height = height_2,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+Rozkład logarytmu naturalnego z ceny aut jest bardziej zbliżony do rozkładu normalnego, choć dalej ma sporo wartości odstających szczególnie po prawej stronie, gdzie wystepują odchyły spowodowane bardzo wysokimi cenami luksusowych aut.
+
+Statystyki opisowe zmiennej objaśnianej `car_price`
+
+```{r}
+
+statystyki_opisowe <- function(x)
+{
+  c("Średnia" = mean(x, na.rm = TRUE),
+    "Mediana" = median(x, na.rm = TRUE),
+    "Odchylenie standardowe" = sd(x, na.rm = TRUE),
+    "Skośność" = skewness(x, na.rm = TRUE),
+    "Minimum" = min(x, na.rm = TRUE),
+    "Maksimum" = max(x, na.rm = TRUE))
+}
+
+table_price <- data.frame(
+  "Statystyka" = names(statystyki_opisowe(dane$car_price)),
+  "car_price" = round(statystyki_opisowe(dane$car_price), 2),
+  "ln(car_price)" = round(statystyki_opisowe(log(dane$car_price)), 2),
+  row.names = NULL
+)
+
+colnames(table_price) <- c("Statystyka", "car_price", "ln(car_price)")
+
+table_price
+```
+
+### Predyktory numeryczne
+
+```{r}
+
+tys <- function(x)
+{
+  ifelse(!is.na(x) & x >= 5000,
+         paste0(x / 1000, " tys."),
+         as.character(x))
+}
+
+kolor <- "#3b3b98"
+
+# Rok produkcji
+p_year <- dane |> 
+  dplyr::filter(!is.na(year)) |> 
+  ggplot(aes(x = year))+
+  geom_histogram(bins = 40, fill = kolor, color = "white", linewidth = 0.1)+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )+
+  scale_y_continuous(labels = tys)+
+  labs(
+    x = "Rok produkcji",
+    y = NULL
+  )
+p_year
+
+
+# Przebieg
+p_miles <- dane |> 
+  dplyr::filter(!is.na(miles)) |> 
+  ggplot(aes(x = miles))+
+  geom_histogram(bins = 40, fill = kolor, color = "white", linewidth = 0.1)+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )+
+  scale_x_continuous(breaks = c(0, 250000, 500000, 750000, 1000000),
+                     labels = c("0", "250 tys.", "500 tys.", "750 tys.", "1 mln"))+
+  scale_y_continuous(labels = tys)+
+  labs(
+    x = "Przebieg [mi]",
+    y = NULL
+  )
+p_miles
+
+
+# Pojemność silnika
+p_vol <- dane |> 
+  dplyr::filter(!is.na(engine_vol)) |> 
+  ggplot(aes(x = engine_vol))+
+  geom_histogram(bins = 40, fill = kolor, color = "white", linewidth = 0.1)+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )+
+  scale_y_continuous(labels = tys)+
+  labs(
+    x = "Pojemność silnika [l]",
+    y = NULL
+  )
+p_vol
+
+
+# Moc silnika
+p_kw <- dane |> 
+  dplyr::filter(!is.na(engine_kW)) |> 
+  ggplot(aes(x = engine_kW))+
+  geom_histogram(bins = 40, fill = kolor, color = "white", linewidth = 0.1)+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )+
+  scale_y_continuous(labels = tys)+
+  labs(
+    x = "Moc silnika [kW]",
+    y = NULL
+  )
+p_kw
+
+ggsave(
+    filename = "template_latex/rys/hist_rok.pdf",
+    plot = p_year,
+    width = width_2x2,
+    height = height_2x2,
+    units = unit,
+    device = cairo_pdf
+  )
+
+ggsave(
+  filename = "template_latex/rys/hist_przebieg.pdf",
+  plot = p_miles,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = "template_latex/rys/hist_pojemnosc.pdf",
+  plot = p_vol,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = "template_latex/rys/hist_moc.pdf",
+  plot = p_kw,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+# Czyszczenie danych
+
+Sprawdzenie liczby unikalnych marek i modeli przed czyszczeniem tekstów z ukrytych braków
+
+```{r}
+
+uni_make_before <- dane |>
+  summarise(
+    unikalne_przed = n_distinct(make),
+    unikalne_po = n_distinct(str_to_lower(str_squish(make)))
+  )
+
+uni_make_before
+
+uni_model_before <- dane |>
+  summarise(
+    unikalne_przed = n_distinct(model),
+    unikalne_po = n_distinct(str_to_lower(str_squish(model)))
+)
+
+uni_model_before
+```
+
+## Zamiana ukrytych braków w kolumnach tekstowych na `NA`
+
+```{r}
+
+clean_hidden_na <- function(data, columns)
+{
+  
+  # definicje braków
+  na_strings <- c("na", "n/a", "nan", "none", "null", "unknown",
+                  "undefined", "empty", "missing")
+  
+  is_hidden_na <- function(x)
+  {
+    clean_x <- x |>
+      stringr::str_trim() |>
+      stringr::str_to_lower()
+    
+    is.na(x) |
+      clean_x %in% na_strings |
+      grepl("^[[:punct:][:space:]]+$", clean_x) # same znaki interpunkcyjne/białe
+  }
+  
+    cleaned_data <- data |>
+      mutate(across(
+        all_of(columns), ~if_else(is_hidden_na(.), NA_character_, .)
+        ))
+    
+    return(cleaned_data)
+}
+
+kolumny_text <- dane |>
+  dplyr::select(where(is.character)) |>
+  colnames()
+
+dane_clean <- clean_hidden_na(dane, kolumny_text)
+```
+
+Sprawdzenie liczby unikalnych marek i modeli po czyszczeniu tekstów z ukrytych braków
+
+```{r}
+
+uni_make_after <- dane_clean |>
+  summarise(
+    unikalne_przed = n_distinct(make),
+    unikalne_po = n_distinct(str_to_lower(str_squish(make)))
+  )
+
+uni_make_after
+
+uni_model_after <- dane_clean |>
+  summarise(
+    unikalne_przed = n_distinct(model),
+    unikalne_po = n_distinct(str_to_lower(str_squish(model)))
+  )
+
+uni_model_after
+```
+
+Jest ich tyle samo co przed czyszczeniem
+
+# Tworzenie nowych kolumn
+
+## Dodanie nowej kolumny `seller_type`
+
+Kolumna powstaje przez znalezienie tekstu "***priv***" w kolumnie `car_seller`
+
+```{r}
+
+summary_private <- data.frame(
+  table(dane_clean$car_seller[grepl("priv", dane_clean$car_seller,
+                                    ignore.case = TRUE)]),
+  row.names = NULL)
+
+colnames(summary_private) <- c("Wartość", "Ilość")
+
+summary_private
+```
+
+*The Private Collection* po sprawdzeniu nie jest osobą prywatną
+
+Nowa kolumna `seller_type` określa rodzaj sprzedawcy pojazdu w ogłoszeniu, ma dwie kategorie – sprzedawca **prywatny** (osoba prywatna) i **zawodowy** (komis/handlarz/firma).
+
+```{r}
+
+dane_clean <- dane_clean |>
+  mutate(seller_type = case_when(
+
+    grepl("The Private Collection", car_seller, ignore.case = TRUE) ~
+      "zawodowy",
+    
+    grepl("priv", car_seller, ignore.case = TRUE) ~ "prywatny",
+    
+    TRUE ~ "zawodowy"
+  ))
+
+dane_clean$seller_type <- factor(dane_clean$seller_type)
+
+table(dane_clean$seller_type)
+```
+
+Usunięcie już zbędnej kolumny `car_seller`
+
+```{r}
+
+dane_clean <- dane_clean |> 
+  dplyr::select(-car_seller)
+```
+
+## Dodanie nowej kolumny o uszkodzeniach pojazdu
+
+Kolumna `car_badges` zawiera informacje o różnych typach uszkodzeń dla ok. **2,3%** obserwacji np. **Cat C**, **Cat D**, **Cat N**, **Cat S**.
+
+Dotyczą one różnych wag szkód, ale zostaną sprowadzone do kolumn binarnych, gdzie 1 oznacza, że w kolumnie `car_badges` pojawia się tekst "**Cat S/N/D/C**" informujące o obecności danej kategorii ubezpieczeniowej (rodzaju uszkodzenia).
+
+- **Cat S** – Uszkodzenia **strukturalne** (podłużnice, słupki, rama).
+
+- **Cat N** – Uszkodzenia **niestrukturalne** (kosmetyka, elektronika, silnik).
+
+  Starsze oznaczenia (przed 2017):
+
+- **Cat C:** Koszt naprawy przekraczał wartość rynkową pojazdu. Zazwyczaj odpowiada dzisiejszej **kategorii** **S**.
+
+- **Cat D:** Koszt naprawy był niższy niż wartość auta, ale ubezpieczyciel i tak uznał naprawę za nieopłacalną (np. z powodu kosztów auta zastępczego). Zazwyczaj odpowiada dzisiejszej **kategorii** **N**.
+
+Utworzono nową kolumnę `damage_category`.
+
+Kategoria **strukturalne** oznacza kategorie ubezpieczeniowe **S i C**.
+
+Kategoria **niestrukturalne** oznacza kategorie ubezpieczeniowe **N i D**.
+
+```{r}
+
+dane_mutate1 <- dane_clean |>
+  mutate(
+    # Kategoria Structural (Cat S + Cat C)
+    cat_structural = as.factor(ifelse(
+      grepl("cat[ -]?[sc]", car_badges, ignore.case = TRUE), 1, 0)
+    ),
+    
+    # Kategoria Non-Structural (Cat N + D)
+    cat_non_structural = as.factor(ifelse(
+      grepl("cat[ -]?[nd]", car_badges, ignore.case = TRUE), 1, 0)
+    )
+  )
+
+
+dane_mutate1 <- dane_clean |>
+  mutate(
+    damage_category = case_when(
+      
+      grepl("cat[ -]?[sc]", car_badges, ignore.case = TRUE) ~ 
+        "strukturalne",
+      grepl("cat[ -]?[nd]", car_badges, ignore.case = TRUE) ~
+        "niestrukturalne",
+      TRUE ~ "brak"
+    )
+  )
+
+dane_mutate1$damage_category <- factor(dane_mutate1$damage_category)
+```
+
+## Dodanie nowych kolumn z wyposażeniem pojazdu
+
+Z tekstu w kolumnach `variant`, `car_sub_title` i `car_attention_grabber` wyszukano za pomocą wyrażeń regularnych słów kluczowych związanych ze szczegółowym wyposażeniem pojazdu. Poszukiwano następujących elementów wyposażenia:
+
+- szyberdach lub panoramiczny/szklany dach
+
+- skórzane wnętrze
+
+- podgrzewane siedzenia
+
+- kamery (np. cofania)
+
+- klimatyzacja
+
+- felgi aluminiowe
+
+- nawigacja satelitarna/gps
+
+- połączenie ze smartphonem (np. Apple CarPlay lub Android Auto)
+
+- światła premium (laserowe/matrycowe/adaptacyjne LED)
+
+- cyfrowe zegary kierowcy
+
+- system audio klasy premium
+
+- napęd na 4 koła
+
+- hak kolownicy
+
+- przyciemniane szyby
+
+- system dostepu keyless
+
+- pakiet stylistyczny
+
+- wyświetlacz Head-Up na przedniej szybie
+
+```{r}
+
+# \\b - granica słowa - dopasowuje pełne wyrazy, a nie słowo zawarte w innym
+# (?:{A}|{B}) - "A" lub "B"
+# [ -]? - spacja albo myślnik (mogą ale nie muszą wystąpić przez znak "?")
+# {s}? - dopuszczalna litera "s" na końcu wyrazu
+# (and|&|/|[ -])? - lub "and" lub "&" lub "/" lub spacja albo myślnik
+pattern_sunroof <- paste0(
+  c(
+    # klasyczne szyberdachy, dachy przesuwne i uchylne, w tym moonroof
+    "\\b(?:sun|moon)[ -]?roofs?\\b",
+    "\\bsliding[ -]?roofs?\\b",
+    "\\belectric[ -]?glass[ -]?roofs?\\b",
+    "\\btilt[ -]?(?:and|&|/|[ -])?[ -]?slide\\b",
+    
+    # skróty potoczne i brytyjskie
+    "\\bpan[ -]?roofs?\\b",
+    "\\bpano\\b",
+    
+    # dach panoramiczny (z opcją 1-2 dodatkowych słów pomiędzy)
+    "\\bpanoramic(?:[ -]?\\w+){0,2}[ -]?(?:roof|glass|sunroof|top|canopy)\\b",
+    "\\bglass[ -]?roofs?\\b",
+    
+    # nazwy handlowe producentów
+    "\\bsky[ -]?view\\b", # Bugatti
+    "\\bopen[ -]?sky\\b", # Audi
+    "\\bvista[ -]?roof\\b", # Ford/Lincoln
+    "\\bsky[ -]?lounge\\b", # BMW
+    "\\bmy[ -]?sky\\b" # Jeep
+  ),
+  collapse = "|"
+)
+
+dane_mutate2 <- dane_mutate1 |>
+  mutate(
+    sunroof = if_else(
+      str_detect(variant, regex(pattern_sunroof,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_sunroof,
+                                        ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_sunroof,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    sunroof = coalesce(sunroof, 0)
+  )
+
+
+pattern_leather <- paste0(
+  c(
+    # standardowe określenia i skróty (z uwzględnieniem leatherette)
+    "\\bleather(?:ette)?\\b",
+    "\\blthr\\b",
+    "\\beco[ -]?leather\\b",
+    
+    # dopasowanie słowa "hide" (wyklucza "hide-away" / "hideaway")
+    "\\bhide(?!-?away)\\b",
+    
+    # tapicerki częściowe (obsługuje pełne słowo oraz skrót "lthr")
+    "\\bhalf[ -]?(?:leather|lthr)\\b",
+    "\\bpart(?:ial)?[ -]?(?:leather|lthr)\\b",
+    
+    # wykończenia skórzane (np. "leather-trimmed", "leather faced")
+    "\\b(?:leather|lthr)[ -]?(?:trimmed?|faced|appointed|seats?|interior)\\b",
+    
+    # specyficzne odmiany skór
+    "\\bnappa\\b",
+    "\\bdakota\\b",
+    "\\bvernasca\\b",
+    "\\bvalcona\\b",
+    "\\bmerino\\b",
+    "\\bwindsor\\b",
+    "\\bmilano\\b", # Audi
+    "\\bnevada\\b", # BMW
+    "\\bboston\\b", # BMW
+    "\\btaurus\\b", # Jaguar / Land Rover
+    "\\bdesigno\\b", # Mercedes-Benz
+    
+    # skóry syntetyczne OEM
+    "\\bartico\\b", # Mercedes-Benz
+    "\\bsensatec\\b" # BMW
+  ),
+  collapse = "|"
+)
+
+dane_mutate3 <- dane_mutate2 |>
+  mutate(
+    leather = if_else(
+      str_detect(variant, regex(pattern_leather,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_leather,
+                                      ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_leather,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    leather = coalesce(leather, 0)
+  )
+
+
+pattern_heated_seats <- paste0(
+  c(
+    # główny wzorzec: heated/htd + do 2 słów rozdzielających + seats
+    "\\b(?:heated|htd)(?:[ -]?\\w+){0,2}[ -]?seats?\\b",
+    
+    # konstrukcje odwrócone (seat heating, seat heaters, seat warmers)
+    "\\bseat[ -]?heat(?:ers?|ing)?\\b",
+    "\\bseat[ -]?warmers?\\b",
+    
+    # pakiety zimowe
+    "\\b(?:winter|cold[ -]?weather)[ -]?(?:packs?|packages?)\\b",
+    
+    # fotele podgrzewane i wentylowane / klimatyzowane
+    "\\b(?:heated|htd)[ -]?(?:and|&|/)[ -]?(?:cooled|ventilated)[ -]?seats?\\b",
+    "\\bclimate[ -]?seats?\\b"
+  ),
+  collapse = "|"
+)
+
+dane_mutate4 <- dane_mutate3 |>
+  mutate(
+    heated_seats = if_else(
+      str_detect(variant, regex(pattern_heated_seats,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_heated_seats,
+                                        ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_heated_seats,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    heated_seats = coalesce(heated_seats, 0)
+  )
+
+
+pattern_camera <- paste0(
+  c(
+    # kamery cofania (+ 2 dodatkowe słowa)
+    "\\b(?:rear|reversing|reverse|back[ -]?up)(?:[ -]?\\w+){0,2}[ -]?cam(?:era)?\\b",
+    
+    # skróty i ogólne określenia kamer parkowania
+    "\\b(?:rvc|park(?:ing)?[ -]?cam(?:era)?)\\b",
+    "\\brear[ -]?assist[ -]?cam(?:era)?\\b",
+    
+    # systemy 360, widok z góry i otoczenia
+    "\\b360(?:[ -]?(?:degree|deg))?(?:[ -]?\\w+){0,2}[ -]?(?:cam(?:era)?|view)\\b",
+    "\\bsurround[ -]?(?:view|cam(?:era)?)\\b",
+    "\\bbird(?:'|’)?s?[ -]?eye(?:[ -]?view)?\\b",
+    "\\bmulti[ -]?view[ -]?cam(?:era)?\\b",
+    
+    # nazwy handlowe i systemy dedykowane
+    "\\baround[ -]?view(?:[ -]?monitor)?\\b", # Nissan / Infiniti
+    "\\btop[ -]?view(?:[ -]?cam(?:era)?)?\\b" # Audi / BMW
+  ),
+  collapse = "|"
+)
+
+dane_mutate5 <- dane_mutate4 |>
+  mutate(
+    camera = if_else(
+      str_detect(variant, regex(pattern_camera,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_camera,
+                                      ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_camera,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    camera = coalesce(camera, 0)
+  )
+
+
+# ?! - dopasowanie nie powiedzie się, gdy po będzie dany wzorzec
+# \s* - dowolna liczba znaków białych
+pattern_ac <- paste0(
+  c(
+    # skróty A/C i AC (z wykluczeniem elektryki, części i modeli pojazdów)
+    "\\ba[./]c\\b",
+    "\\bac(?!\\s*(?:cobra|charg|power|input|delco))\\b",
+    
+    # standardowe określenia "air con" (obsługuje con, cond, conditioner, conditioning)
+    "\\bair[ -]?con(?:d|ditioner|ditioning)?\\b",
+    
+    # klimatyzacja automatyczna / Climate Control i skróty
+    "\\bclimate(?:[ -]?(?:control|ctrl))?\\b",
+    "\\bclimatronic\\b",
+    "\\bclimatic\\b",
+    
+    # nazwy handlowe OEM (np. Mercedes-Benz)
+    "\\bthermatic\\b",
+    "\\bthermotronic\\b",
+    
+    # klimatyzacje automatyczne i cyfrowe
+    "\\bauto(?:matic)?[ -]?(?:air[ -]?con(?:ditioning)?|a/c|climate|temp(?:erature)?)\\b",
+    "\\bdigital[ -]?(?:climate|air[ -]?con|a/c)\\b",
+    
+    # wielostrefowość (cyfry/słowa)
+    "\\b(?:[1234]|single|dual|twin|tri|triple|quad|two|three|four)[ -]?zones?\\b"
+  ),
+  collapse = "|"
+)
+
+
+dane_mutate6 <- dane_mutate5 |>
+  mutate(
+    ac = if_else(
+      str_detect(variant, regex(pattern_ac,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_ac,
+                                        ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_ac,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    ac = coalesce(ac, 0)
+  )
+
+# [12][0-9] - dowolna liczba dwucyfrowa od 10 do 29
+# (?:[ -]?\\w+){0,3} - do 3 dodatkowych słów opisujących
+pattern_alloys <- paste0(
+  c(
+    # podstawowe określenia felg aluminiowych i ich skróty
+    "\\b(?:light[ -]?)?alloys?\\b",
+    "\\balloy[ -]?(?:wheels?|rims?)\\b",
+    "\\bmags?\\b",
+    "\\bmag[ -]?wheels?\\b",
+    
+    # rozmiary (10-29 cali / inch / in / ") z ograniczeniem do max 3 słów wstawkowych
+    "\\b[12][0-9](?:[ -]?(?:inch|in|[\"”']))?(?:[ -]?\\w+){0,3}[ -]?(?:alloys?|rims?|wheels?)\\b",
+    
+    # wykończenie i kolorystyka charakterystyczna dla felg aluminiowych
+    "\\bdiamond[ -]?cut(?:[ -]?(?:alloys?|wheels?|rims?))?\\b",
+    "\\bbi[ -]?colou?r[ -]?(?:alloys?|wheels?|rims?)\\b",
+    
+    # wzory felg aluminiowych (multi-spoke, double-spoke, 5-spoke itp.)
+    "\\b(?:multi|double|twin|split|[3-9])[ -]?spokes?(?:[ -]?(?:alloys?|wheels?|rims?))?\\b"
+  ),
+  collapse = "|"
+)
+
+dane_mutate7 <- dane_mutate6 |>
+  mutate(
+    alloy_rims = if_else(
+      str_detect(variant, regex(pattern_alloys,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_alloys,
+                                      ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_alloys,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    alloy_rims = coalesce(alloy_rims, 0)
+  )
+
+
+pattern_sat_nav <- paste0(
+  c(
+    # podstawowe i pełne określenia (Sat Nav, Satellite Navigation, GPS)
+    "\\b(?:sat[ -]?nav|satellite[ -]?navigation)s?\\b",
+    "\\bnavigation(?:[ -]?systems?)?\\b",
+    "\\bgps(?:[ -]?(?:nav|navigation|system|map))?\\b",
+    
+    # nawigacje wbudowane, ekrany dotykowe i kolorowe
+    "\\b(?:touchscreen|widescreen|colour|color|in[ -]?dash)[ -]?(?:sat[ -]?nav|nav|navigation)\\b",
+    "\\bbuilt[ -]?in[ -]?(?:maps?|nav|navigation)\\b",
+    
+    # pakiety i fabryczne systemy nawigacyjne
+    "\\b(?:pro(?:fessional)?|business)[ -]?(?:media|nav|navigation)\\b",
+    "\\bmedia[ -]?packs?\\b",
+    "\\bmmi(?:[ -]?(?:nav|navigation))?\\b", # Audi
+    "\\bcomand\\b", # Mercedes-Benz
+    "\\bidrive\\b", # BMW
+    "\\bdiscover[ -]?nav\\b", # Volkswagen
+    "\\br[ -]?link\\b" # Renault
+  ),
+  collapse = "|"
+)
+
+dane_mutate8 <- dane_mutate7 |>
+  mutate(
+    sat_nav = if_else(
+      str_detect(variant, regex(pattern_sat_nav,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_sat_nav,
+                                        ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_sat_nav,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    sat_nav = coalesce(sat_nav, 0)
+  )
+
+
+pattern_smartphone <- paste0(
+  c(
+    # główne systemy (Apple CarPlay, Android Auto, MirrorLink)
+    "\\b(?:apple[ -]?)?car[ -]?play\\b",
+    "\\bandroid[ -]?auto\\b",
+    "\\bmirror[ -]?link\\b",
+    
+    # nazwy handlowe producentów (OEM)
+    "\\bapp[ -]?connect\\b", # VW
+    "\\bsmart[ -]?link\\b", # Skoda
+    "\\bfull[ -]?link\\b", # Seat
+    "\\baudi[ -]?smartphone[ -]?interface\\b", # Audi
+    "\\bincontrol[ -]?(?:apps?|pro)\\b", # Jaguar / Land Rover
+    
+    # klonowanie ekranu, projekcja i pakiety integracyjne
+    "\\bsmartphone[ -]?(?:link|integration|interface|pack(?:age)?|replication|projection)\\b",
+    "\\b(?:screen|phone)[ -]?mirroring\\b",
+    "\\bmobile[ -]?phone[ -]?apps?\\b",
+    
+    # aplikacje nawigacyjne i muzyczne uruchamiane na ekranie auta
+    "\\bgoogle[ -]?maps\\b",
+    "\\bapple[ -]?maps\\b",
+    "\\bwaze\\b",
+    "\\bspotify\\b"
+  ),
+  collapse = "|"
+)
+
+
+dane_mutate9 <- dane_mutate8 |>
+  mutate(
+    smartphone_link = if_else(
+      str_detect(variant, regex(pattern_smartphone,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_smartphone,
+                                        ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_smartphone,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    smartphone_link = coalesce(smartphone_link, 0)
+  )
+
+# Światła premium - laserowe/matrix/adaptacyjne
+pattern_premium_lights <- paste0(
+  c(
+    # światła laserowe (np. BMW Laserlight, Audi Laser)
+    "\\blaser[ -]?(?:light|headlight|led)s?\\b",
+    "\\blaserlights?\\b",
+    
+    # światła matrycowe (Matrix, HD Matrix)
+    "\\b(?:hd[ -]?)?matrix(?:[ -]?(?:led|headlight|light)s?)?\\b",
+    "\\bintelli[ -]?lux\\b", # Opel
+    
+    # adaptacyjne i dynamiczne LED (z możliwością 1-2 słów wstawkowych, np. "adaptive front LED")
+    "\\b(?:adaptive|dynamic)(?:[ -]?\\w+){0,2}[ -]?(?:leds?|lights?|headlights?)\\b",
+    
+    # nazwy handlowe producentów premium
+    "\\biq[.\\- ]?lights?\\b", # VW IQ.Light (z kropką/myślnikiem/spacją)
+    "\\bmulti[ -]?beam\\b", # Mercedes Multibeam
+    "\\bdigital[ -]?lights?\\b", # Mercedes / Audi Digital Light
+    "\\bpdls(?:[ -]?plus)?\\b", # Porsche Dynamic Light System
+    "\\bicon[ -]?adaptive\\b", # BMW Icon Adaptive LED
+    "\\bblade[ -]?scan\\b" # Lexus BladeScan
+  ),
+  collapse = "|"
+)
+
+dane_mutate10 <- dane_mutate9 |>
+  mutate(
+    # Światła premium (z wykluczeniem modelu Hyundai Matrix)
+    premium_lights = if_else(
+      (str_detect(variant, regex(pattern_premium_lights,
+                                 ignore_case = TRUE)) |
+       str_detect(car_sub_title, regex(pattern_premium_lights,
+                                         ignore_case = TRUE)) |
+       str_detect(car_attention_grabber, regex(pattern_premium_lights,
+                                                 ignore_case = TRUE))) &
+        !(make == "Hyundai" & model == "Matrix"),
+      1, 0
+    ),
+    premium_lights = coalesce(premium_lights, 0),
+  )
+
+# \\. - dosłowna kropka
+pattern_virtual_cockpit <- paste0(
+  c(
+    # podstawowe zwroty z przymiotnikami cyfrowymi (Digital, Virtual, TFT), do 2 słów wstawkowych
+    "\\b(?:virtual|digital|tft|active|interactive|widescreen|curved|full[ -]?digital)(?:[ -]?\\w+){0,2}[ -]?(?:cockpit|dash(?:board)?|cluster|instrument[ -]?cluster|dials|clocks|binnacle|display)\\b",
+    
+    # dedykowane nazwy fabryczne producentów
+    "\\bactive[ -]?info[ -]?display\\b", # VW / Skoda / Seat
+    "\\binnovision[ -]?cockpit\\b", # VW Touareg
+    "\\blive[ -]?cockpit(?:[ -]?(?:pro(?:fessional)?|plus))?\\b", # BMW
+    "\\bsupervision[ -]?cluster\\b", # Kia / Hyundai
+    "\\bi[ -]?cockpit\\b", # Peugeot
+    "\\bwidescreen[ -]?cockpit\\b", # Mercedes
+    "\\bdriver(?:'s)?[ -]?(?:display|screen|information[ -]?display)\\b", # Volvo / Polestar / Ford
+    
+    # zegary cyfrowe z podanym rozmiarem ekranu w calach
+    "\\b(?:12\\.3|10\\.25|12|10|7|8)(?:[ -]?(?:inch|in|[\"”']))?[ -]?(?:digital|tft|virtual)[ -]?(?:cockpit|dash|cluster|display)\\b",
+    
+    # systemy multimedialne połączone z zegarami (MBUX / iDrive)
+    "\\b(?:mbux|idrive[ -]?[789]|pivi[ -]?pro)[ -]?(?:digital|curved)?[ -]?(?:dash|dashboard|cluster|cockpit)\\b"
+  ),
+  collapse = "|"
+)
+
+dane_mutate11 <- dane_mutate10 |>
+  mutate(
+    virtual_cockpit = if_else(
+      str_detect(variant, regex(pattern_virtual_cockpit,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_virtual_cockpit,
+                                        ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_virtual_cockpit,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    virtual_cockpit = coalesce(virtual_cockpit, 0)
+  )
+
+
+pattern_premium_audio <- paste0(
+  c(
+    # Harman Kardon, Bang & Olufsen, Bowers & Wilkins
+    "\\b(?:harman[ -]?kardon|h/k)\\b",
+    "\\bhk[ -]?(?:sound|audio|system|speakers?)\\b",
+    "\\bbang[ -]?(?:&|and)[ -]?olufsen\\b", "\\bb&o\\b",
+    "\\bbowers[ -]?(?:&|and)[ -]?wilkins\\b", "\\bb&w\\b",
+    
+    # wpisy wymagające ścisłego kontekstu
+    "\\bbeats[ -]?(?:audio|sound|system|by[ -]?dre)\\b", # kontekst audio (eliminacja czasownika "beats")
+    "\\bfender[ -]?(?:audio|sound|system)\\b", # eliminacja słowa "fender"
+    "\\balpine[ -]?(?:audio|sound|system|speakers?)\\b", # wymusza kontekst audio
+    "\\binfinity[ -]?(?:audio|sound|system)\\b", # ochrona przed marką Infiniti
+    
+    # dedykowane marki audio
+    "\\bburmester\\b",
+    "\\bmeridian\\b",
+    "\\bmark[ -]?levinson\\b",
+    "\\bbose\\b",
+    "\\bnaim\\b",
+    "\\bdynaudio\\b",
+    "\\bjbl\\b",
+    "\\bcanton\\b",
+    "\\brockford[ -]?fosgate\\b",
+    "\\blexicon\\b",
+    "\\bkrell\\b",
+    "\\brevel\\b",
+    "\\bmcintosh\\b", # Jeep / Grand Cherokee
+    "\\bsonos\\b", # Audi
+    "\\bakg\\b", # Cadillac
+    "\\bkef\\b", # Lotus
+    
+    # ogólne określenia poziomów audio premium (np. Volvo / Ford)
+    "\\bpremium[ -]?(?:sound|audio)(?:[ -]?systems?)?\\b",
+    "\\bsurround[ -]?sound(?:[ -]?systems?)?\\b"
+  ),
+  collapse = "|"
+)
+
+dane_mutate12 <- dane_mutate11 |>
+  mutate(
+    premium_audio = if_else(
+      str_detect(variant, regex(pattern_premium_audio,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_premium_audio,
+                                        ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_premium_audio,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    premium_audio = coalesce(premium_audio, 0)
+  )
+
+
+pattern_4wd <- paste0(
+  c(
+    # skróty, oznaczenia cyfrowe i pełne nazwy opisowe
+    "\\b4[ -]?x[ -]?4\\b",
+    "\\b4[ -]?wd\\b",
+    "\\ba[ -]?wd\\b", # łapie AWD, A-WD
+    "\\b(?:four|all|4)[ -]wheel[ -]?drives?\\b",
+    
+    # nazwy własne systemów (obsługuje spacje i myślniki)
+    "\\bquattro\\b", # Audi
+    "\\bx[ -]?drive\\b", # BMW (xDrive, x-Drive, x Drive)
+    "\\b4[ -]?matic\\b", # Mercedes-Benz (4Matic, 4-Matic)
+    "\\b4[ -]?motion\\b", # Volkswagen (4Motion, 4-Motion)
+    "\\b4[ -]?drive\\b", # SEAT
+    "\\ball[ -]?grip\\b", # Suzuki
+    "\\bh[ -]?trac\\b", # Hyundai
+    "\\bsymmetrical[ -]?(?:awd|4wd)\\b", # Subaru
+    "\\bintelligent[ -]?(?:awd|4wd)\\b", # Ford
+    "\\bi[ -]?awd\\b", # Ford / Volvo
+    "\\ball[ -]?mode(?:[ -]?(?:4x4|4wd))?\\b", # Nissan
+    "\\bterrain[ -]?response\\b", # Land Rover
+    "\\bquadra[ -]?(?:trac|drive)\\b", # Jeep
+    "\\b4xe\\b", # Jeep
+    
+    # napędy 4x4 w hybrydach i elektrykach
+    "\\bdual[ -]?motors?\\b", # Tesla, Polestar, Volvo, Hyundai/Kia
+    "\\be[ -]?four\\b", # Toyota / Lexus
+    "\\be[ -]?4orce\\b", # Nissan EV 4WD
+    "\\bs[ -]?awc\\b", # Mitsubishi Super All-Wheel Control
+    "\\bsh[ -]?awd\\b" # Honda / Acura
+  ),
+  collapse = "|"
+)
+
+dane_mutate13 <- dane_mutate12 |>
+  mutate(
+    has_4wd = if_else(
+      str_detect(variant, regex(pattern_4wd,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_4wd,
+                                        ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_4wd,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    has_4wd = coalesce(has_4wd, 0)
+  )
+
+
+pattern_towbar <- paste0(
+  c(
+    # podstawowy "towbar"
+    "\\btow[ -]?bars?\\b",
+    
+    # rodzaje i sposoby rozkładania haków
+    "\\b(?:electric(?:ally)?|folding|deployable|power|hide[ -]?away|detachable|removable|retractable|fixed|swan[ -]?neck|flange)(?:[ -]?\\w+){0,2}[ -]?tow[ -]?bars?\\b",
+    
+    # określenia typu "hitch" i haki do przyczep
+    "\\b(?:tow(?:ing)?|trailer)[ -]?hitch(?:es)?\\b",
+    "\\btrailer[ -]?(?:coupling|bar)s?\\b",
+    
+    # pakiety holownicze
+    "\\b(?:tow(?:ing)?|trailer)[ -]?(?:packs?|packages?|equipment)\\b"
+  ),
+  collapse = "|"
+)
+
+dane_mutate14 <- dane_mutate13 |>
+  mutate(
+    tow_bar = if_else(
+      str_detect(variant, regex(pattern_towbar,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_towbar,
+                                        ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_towbar,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    tow_bar = coalesce(tow_bar, 0)
+  )
+
+
+pattern_privacy_glass <- paste0(
+  c(
+    # privacy Glass / glazing / windows
+    "\\b(?:privacy|private)[ -]?(?:glass|glazings?|windows?|tints?)\\b",
+    "\\brear[ -]?privacy\\b",
+    
+    # nazwy własne i fabryczne producentów
+    "\\bsun[ -]?protection[ -]?(?:glass|glazings?)\\b", # BMW
+    "\\bsunset[ -]?(?:glass|glazings?)\\b", # Skoda / VAG
+    "\\bsolar[ -]?(?:control|attenuating)?[ -]?glass\\b", # JLR/Kia/Hyundai
+    "\\bdarkened[ -]?(?:glass|glazings?|windows?)\\b",
+    
+    # przyciemnienia z opcjonalnymi słowami wstawkowymi (np. "tinted rear windows", "dark tinted glass")
+    "\\b(?:dark|deep|factory|limo)?[ -]?tinted(?:[ -]?\\w+){0,2}[ -]?(?:glass|glazings?|windows?)\\b",
+    
+    # szybkie określenia potoczne i warianty "tints"
+    "\\b(?:factory|rear|limo)[ -]?tints?\\b"
+  ),
+  collapse = "|"
+)
+
+dane_mutate15 <- dane_mutate14 |>
+  mutate(
+    privacy_glass = if_else(
+      str_detect(variant, regex(pattern_privacy_glass,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_privacy_glass,
+                                        ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_privacy_glass,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    privacy_glass = coalesce(privacy_glass, 0)
+  )
+
+
+pattern_keyless_entry <- paste0(
+  c(
+    # standardowe i opisowe określenia bezkluczykowego dostępu do drzwi
+    "\\bkeyless[ -]?(?:entry|access|open(?:ing)?|unlock(?:ing)?|drive)\\b",
+    "\\bpassive[ -]?(?:entry|access)\\b",
+    "\\bproximity[ -]?(?:entry|access|key)\\b",
+    "\\bhands[ -]?free[ -]?(?:entry|access|opening)\\b",
+    
+    # nazwy własne marek
+    "\\bcomfort[ -]?access\\b", # BMW / Mini
+    "\\bconvenience[ -]?(?:access|key)\\b", # Audi / Porsche
+    "\\bkessy(?:[ -]?(?:advanced|full))?\\b", # VAG
+    "\\badvanced[ -]?key\\b", # Audi
+    "\\bkey[ -]?free(?:[ -]?(?:system|entry))?\\b", # Ford KeyFree
+    "\\bopen[ -]?(?:&|and)[ -]?start\\b", # Opel / Vauxhall
+    
+    # systemy Smart / Intelligent Key
+    "\\bsmart[ -]?(?:entry|access|key(?:less)?)\\b",
+    "\\bi(?:ntelligent)?[ -]?key\\b", # Nissan I-Key / Intelligent Key
+    "\\bfast[ -]?key\\b" # Mitsubishi Fast-Key
+  ),
+  collapse = "|"
+)
+
+dane_mutate16 <- dane_mutate15 |>
+  mutate(
+    keyless_entry = if_else(
+      str_detect(variant, regex(pattern_keyless_entry,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_keyless_entry,
+                                        ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_keyless_entry,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    keyless_entry = coalesce(keyless_entry, 0)
+  )
+
+
+pattern_styling_pack <- paste0(
+  c(
+    # klasyczne linie fabryczne (M Sport, S Line, AMG Line, R-Design)
+    "\\bm[ -]?sport(?:[ -]?pro)?\\b", # BMW M Sport / M Sport Pro
+    "\\bm[ -]?tech(?:nik)?\\b", # BMW M Tech / M Technik
+    "\\bs[ -]?line\\b", # Audi S Line
+    "\\bamg[ -]?line\\b", # Mercedes AMG Line
+    "\\br[ -]?line\\b", # VW R-Line
+    "\\bst[ -]?line(?:[ -]?x)?\\b", # Ford ST-Line / ST-Line X
+    "\\bgt[ -]?line\\b", # Kia / Peugeot GT Line
+    "\\bn[ -]?line\\b", # Hyundai N Line
+    "\\bvxr[ -]?line\\b", # Vauxhall VXR Line
+    "\\bgs[ -]?line\\b", # Vauxhall GS Line
+    "\\bfr[ -]?line\\b", # SEAT FR Line
+    "\\bsport[ -]?line\\b", # Skoda / VW
+    "\\br[ -]?sport\\b", # Jaguar R-Sport
+    "\\br[ -]?design\\b", # Volvo R-Design
+    "\\br[ -]?dynamic\\b", # Jaguar / Land Rover R-Dynamic
+    
+    # edycje specjalne i pakiety stylistyczne OEM
+    "\\bblack[ -]?edition\\b", # Audi / Nissan / Toyota
+    "\\bnight[ -]?edition\\b", # Mercedes
+    "\\bshadow[ -]?edition\\b", # BMW
+    "\\bshadow[ -]?line\\b", # BMW Shadowline
+    "\\bmonte[ -]?carlo\\b", # Skoda
+    "\\bsport[ -]?design\\b", # Porsche SportDesign
+    
+    # pakiety dechromujące, aerodynamiczne i bodykity
+    "\\bblack[ -]?pack(?:age)?\\b",
+    "\\bblack[ -]?styling[ -]?(?:pack|package|kit)\\b",
+    "\\bblack[ -]?optics?\\b",
+    "\\baero[ -]?(?:pack|package|kit)\\b",
+    "\\bstyling[ -]?(?:pack|package|kit)\\b",
+    "\\b(?:factory[ -]?)?body[ -]?kits?\\b"
+  ),
+  collapse = "|"
+)
+
+dane_mutate17 <- dane_mutate16 |>
+  mutate(
+    style_pack = if_else(
+      str_detect(variant, regex(pattern_styling_pack,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_styling_pack,
+                                        ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_styling_pack,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    style_pack = coalesce(style_pack, 0)
+  )
+
+
+pattern_hud <- paste0(
+  c(
+    # główny termin "head up" / "heads up"
+    "\\bheads?[ -]?up(?:[ -]?(?:displays?|screens?|systems?|projectors?|units?))?\\b",
+    
+    # HUD oraz technologia rozszerzonej rzeczywistości (AR-HUD)
+    "\\b(?:ar[ -]?)?hud\\b",
+    "\\baugmented[ -]?reality[ -]?(?:hud|display)\\b",
+    
+    # projekcja na szybę i wyświetlacze projektorowe
+    "\\bprojected[ -]?(?:displays?|screens?)\\b",
+    "\\bwindscreen[ -]?(?:projection|display)\\b"
+  ),
+  collapse = "|"
+)
+
+dane_mutate18 <- dane_mutate17 |>
+  mutate(
+    head_up_display = if_else(
+      str_detect(variant, regex(pattern_hud,
+                                ignore_case = TRUE)) |
+      str_detect(car_sub_title, regex(pattern_hud,
+                                      ignore_case = TRUE)) |
+      str_detect(car_attention_grabber, regex(pattern_hud,
+                                                ignore_case = TRUE)),
+      1, 0
+    ),
+    head_up_display = coalesce(head_up_display, 0)
+  )
+```
+
+Dodatkowo na podstawie tych cech utworzono kolumnę będącą sumą elementów wyposażenia
+
+```{r}
+
+dane_mutate19 <- dane_mutate18 |>
+  mutate(
+    n_equipment = rowSums(across(c(sunroof, leather, heated_seats, camera, 
+                                   ac, alloy_rims, sat_nav, smartphone_link,
+                                   premium_lights, virtual_cockpit, 
+                                   premium_audio, has_4wd, tow_bar, 
+                                   privacy_glass, keyless_entry, style_pack,
+                                   head_up_display)))
+  )
+```
+
+Eliminacja kolumn: `variant`, `car_badges`, `car_sub_title` i `car_attention_grabber`
+
+```{r}
+
+dane_complete <- dane_mutate19 |> 
+  dplyr::select(-c(variant, car_badges, car_sub_title, car_attention_grabber))
+```
+
+Zamiana nowych kolumn na kategorie
+
+```{r}
+
+dane_complete$sunroof <- factor(dane_complete$sunroof)
+dane_complete$leather <- factor(dane_complete$leather)
+dane_complete$heated_seats <- factor(dane_complete$heated_seats)
+dane_complete$camera <- factor(dane_complete$camera)
+dane_complete$ac <- factor(dane_complete$ac)
+dane_complete$alloy_rims <- factor(dane_complete$alloy_rims)
+dane_complete$sat_nav <- factor(dane_complete$sat_nav)
+dane_complete$smartphone_link <- factor(dane_complete$smartphone_link)
+dane_complete$premium_lights <- factor(dane_complete$premium_lights)
+dane_complete$virtual_cockpit <- factor(dane_complete$virtual_cockpit)
+dane_complete$premium_audio <- factor(dane_complete$premium_audio)
+dane_complete$has_4wd <- factor(dane_complete$has_4wd)
+dane_complete$tow_bar <- factor(dane_complete$tow_bar)
+dane_complete$privacy_glass <- factor(dane_complete$privacy_glass)
+dane_complete$keyless_entry <- factor(dane_complete$keyless_entry)
+dane_complete$style_pack <- factor(dane_complete$style_pack)
+dane_complete$head_up_display <- factor(dane_complete$head_up_display)
+```
+
+## Analiza ukrytych braków
+
+### `engine_vol`
+
+```{r}
+
+braki_engine_vol <- dane_complete |>
+  mutate(
+    fuel_type = fct_na_value_to_level(fuel_type, level = "BRAK DANYCH")
+  ) |> 
+  dplyr::group_by(fuel_type) |>
+  summarise(
+    procent_na = mean(is.na(engine_vol))
+  )
+
+ggplot(braki_engine_vol, aes(x = procent_na, y = reorder(fuel_type,
+                                                         procent_na))
+)+
+  geom_col(fill = "black")+
+  geom_text(
+    aes(
+      label = case_when(
+        procent_na == 0 ~ "",
+        procent_na < 0.001 ~ "< 0,1%",
+        TRUE ~ scales::percent(procent_na,
+                               accuracy = 0.1,
+                               decimal.mark = ","
+        )
+      )
+    ),
+    vjust = 0.3,
+    hjust = -0.2,
+    size = 4,
+    fontface = "bold"
+  )+
+  scale_x_continuous(
+    labels = function(x) scales::percent(x, decimal.mark = ","),
+    breaks = c(0.25, 0.5, 0.75, 1),
+    expand = expansion(mult = c(0, 0.15))
+  )+
+  labs(
+    title = "Braki danych o pojemności silnika według rodzaju paliwa",
+    x = "Braki danych [%]",
+    y = "Typ paliwa"
+  )+
+  theme_minimal(base_size = 8)
+```
+
+Zauważono, że dla prawie wszystkich pojazdów elektrycznych oraz napędzanych wodorem występują braki w kolumnie `engine_vol`, więc zastąpiono je zerami. Będzie trzeba uwzględnić to podczas ustalania wartości graninczych dla kolumny `engine_vol`.
+
+```{r}
+
+dane_complete <- dane_complete |>
+  mutate(
+    engine_vol = case_when(
+      fuel_type %in% c("elektryczny", "wodór") ~ 0,
+      TRUE ~ engine_vol
+    )
+  )
+```
+
+### `miles`
+
+Najpierw wybrano z danych te obserwacje, które były nowymi samochodami (dla których zmienna `brand_new` **jest** **równa 1**). Następnie porównano ilość braków przebiegu `miles` w tej grupie i żadna obserwacja nie miała podanej wartości dla tej kolumny.
+
+```{r}
+
+bn <- dane_complete |> 
+  dplyr::filter(brand_new == 1)
+
+bn |>
+  count(miles) |>
+  mutate(pct = n / sum(n)) |>
+  ggplot(aes(x = factor(miles), y = pct))+
+  geom_col(fill = "black")+
+  geom_text(
+    aes(label = percent(pct, accuracy = 0.1)),
+    vjust = 2,
+    size = 10,
+    color = "white"
+  )+
+  scale_y_continuous(labels = percent_format())+
+  labs(
+    title = "Wykres braków danych o przebiegu wśród nowych samochodów",
+    x = "Przebieg",
+    y = "Udział (%)"
+  )
+```
+
+Zastąpiono te braki wartością 0, którą ustalono jako umowną wartość przebiegu dla nowych pojazdów.
+
+```{r}
+
+dane_complete <- dane_complete |>
+  mutate(
+    miles = case_when(
+      brand_new == 1 ~ 0,
+      TRUE ~ miles
+    )
+  )
+```
+
+## Ograniczanie zakresów wartości zmiennych
+
+### Eliminacja błędnych wartości
+
+Ograniczono:
+
+- **Rok produkcji:** 1886 – 2022
+
+- **Pojemność silnika:** 0 – 8,4 \[l\]
+
+- **Moc silnika:** 0 – 2000 \[kW\]
+
+- **Przebieg:** 0 – 999 999 \[mil\]
+
+- **Cena:** \> 0 \[GBP\]
+
+```{r}
+
+dane_real <- dane_complete |> 
+  dplyr::filter((year >= 1886 & year <= 2022)
+                | is.na(year)) |> 
+  
+  dplyr::filter(engine_vol >= 0 & engine_vol <= 8.4
+                | is.na(engine_vol)) |> 
+  
+  dplyr::filter((engine_kW > 0 & engine_kW <= 2000)
+                | is.na(engine_kW)) |>
+  
+  dplyr::filter((miles >= 0 & miles <= 999999)
+                | is.na(miles)) |> 
+  
+  dplyr::filter(car_price > 0
+                 | is.na(car_price))
+
+nrow(dane_real)
+```
+
+Kwantyle do filtracji dziedzinowej
+
+```{r}
+
+dane_real |>
+  summarise(
+    Q0.1 = quantile(engine_vol, 0.001, na.rm = TRUE),
+    Q99.9 = quantile(engine_vol, 0.999, na.rm = TRUE)
+  )
+
+dane_real |>
+  summarise(
+    Q99 = quantile(engine_kW, 0.99, na.rm = TRUE),
+    Q99.9 = quantile(engine_kW, 0.999, na.rm = TRUE)
+  )
+
+dane_real |>
+  summarise(
+    Q99 = quantile(miles, 0.99, na.rm = TRUE),
+    Q99.9 = quantile(miles, 0.999, na.rm = TRUE)
+  )
+```
+
+### Filtracja dziedzinowa
+
+Dodatkowo zawężono zakresy wartości wybranych zmiennych do bardziej użytecznych i przyjaznych podczas modelowania, skupiając się głównie na analizie ogólnego, masowego rynku pojazdów.
+
+Ograniczono:
+
+- **Rok produkcji:** 2000 – 2022
+
+- **Pojemność silnika:** 0 – 6,5 \[l\]
+
+- **Moc silnika:** 30 – 500 \[kW\]
+
+- **Przebieg:** 0 – 210 000 \[mil\]
+
+- **Cena:** kwantyl 0,1% (900 \[GBP\]) – kwantyl 99,9% (225 000 \[GBP\])
+
+```{r}
+
+before_2000 <- dane_real |> 
+  dplyr::filter(year < 2000)
+
+nrow(before_2000)/(nrow(dane_real))*100
+```
+
+Jedynie około 0,3 % to pojazdy wyprodukowane przed 2000 rokiem.
+
+```{r}
+
+cena_min <- quantile(dane_real$car_price, 0.001)
+cena_max <- quantile(dane_real$car_price, 0.999)
+
+dane_filtered <- dane_real |> 
+  dplyr::filter(year >= 2000
+                | is.na(year)) |> 
+  
+  dplyr::filter((engine_vol >= 0 & engine_vol <= 6.5)
+                | is.na(engine_vol)) |> 
+  
+  dplyr::filter((engine_kW >= 30 & engine_kW <= 500)
+                | is.na(engine_kW)) |>
+  
+  dplyr::filter((miles >= 0 & miles <= 210000)
+                | is.na(miles)) |> 
+  
+  dplyr::filter((car_price >= cena_min & car_price <= cena_max)
+                 | is.na(car_price))
+
+nrow(dane_filtered)
+```
+
+### Podejrzane wartości przebiegu/roku produkcji
+
+Zauważono, że niektóre pojazdy mają bardzo wysokie przebiegi, pomimo ich niedawnego roku produkcji. Z tego powodu zastosowano filtrację względem roku produkcji. Ustalono, że wiek pojazdu w latach to jego rok produkcji powiększony o rok i wyeliminowano te obserwacje, które wykazywały nieprawdopodobne wartości przebiegu – **powyżej 30 000 mil rocznie**
+
+```{r}
+
+# rozkład rocznego przebiegu
+dane_filtered |>
+  mutate(
+    age = 2023 - year,
+    yearly_miles = miles / age
+  ) |>
+  summarise(
+    Mediana = median(yearly_miles, na.rm = TRUE),
+    Q95 = quantile(yearly_miles, 0.95, na.rm = TRUE),
+    Q99 = quantile(yearly_miles, 0.99, na.rm = TRUE),
+    Q99.9 = quantile(yearly_miles, 0.999, na.rm = TRUE)
+  )
+
+
+dane_cleaned <- dane_filtered |>
+  mutate(
+    age = 2023 - year,
+    yearly_miles = miles / age
+  ) |>
+  dplyr::filter(
+    yearly_miles <= 30000
+    | is.na(yearly_miles)
+  ) |>
+  dplyr::select(-c(age, yearly_miles))
+
+nrow(dane_cleaned)
+```
+
+## Usuwanie duplikatów logicznych
+
+Duplikaty na przefiltrowanych danych
+
+```{r}
+
+sum(duplicated(dane_cleaned))
+```
+
+Suma duplikatów po tych działaniach wyniosła **356109**.
+
+Liczebności unikalnych wartości w kolumnach:
+
+```{r}
+
+sum(table(dane_cleaned$make) >= 1)
+sum(table(dane_cleaned$model) >= 1)
+sum(table(dane_cleaned$year) >= 1)
+sum(table(dane_cleaned$body_type) >= 1)
+sum(table(round(dane_cleaned$miles, -2)) >= 1)
+sum(table(dane_cleaned$engine_vol) >= 1)
+sum(table(dane_cleaned$transmission) >= 1)
+sum(table(dane_cleaned$fuel_type) >= 1)
+sum(table(dane_cleaned$full_service) >= 1)
+sum(table(dane_cleaned$part_service) >= 1)
+sum(table(dane_cleaned$full_dealership) >= 1)
+sum(table(dane_cleaned$brand_new) >= 1)
+sum(table(dane_cleaned$engine_kW) >= 1)
+sum(table(dane_cleaned$seller_type) >= 1)
+sum(table(dane_cleaned$damage_category) >= 1)
+```
+
+### Duplikaty logiczne
+
+```{r}
+
+dane_do_testow <- dane_cleaned |>
+  mutate(
+    na_count = rowSums(is.na(pick(everything()))),
+    row_id = row_number(),
+    miles_rounded = round(miles, -2) # przebieg zaokrąglony do setek
+  ) |>
+  # sortujemy raz, aby oba podejścia wybierały te same "najlepsze" rekordy
+  dplyr::arrange(na_count, desc(n_equipment), car_price)
+
+
+dane_deduplicated <- dane_do_testow |>
+  # usuwamy duplikaty po kluczowych cechach zostawiając najpełniejszy rekord
+  distinct(make, model, year, body_type, miles, engine_vol, transmission, fuel_type, full_service, part_service, full_dealership, brand_new, engine_kW, seller_type, damage_category, .keep_all = TRUE) # NA == NA też usuwa
+
+cat("Liczba unikalnych obserwacji dla dokładnego przebiegu:", nrow(dane_deduplicated))
+
+dane_deduplicated_rounded <- dane_do_testow |>
+  distinct(make, model, year, body_type, miles_rounded, engine_vol, transmission, fuel_type, full_service, part_service, full_dealership, brand_new, engine_kW, seller_type, damage_category, .keep_all = TRUE)
+
+cat("\nLiczba unikalnych obserwacji dla zaokrąglonego przebiegu:", nrow(dane_deduplicated_rounded), "\n\n")
+
+ids_rejected_only_by_rounding <- setdiff(dane_deduplicated$row_id, dane_deduplicated_rounded$row_id)
+
+# wyciągamy te konkretne wiersze (takie same po zaokrągleniu)
+df_diff_rejected <- dane_deduplicated |>
+  dplyr::filter(row_id %in% ids_rejected_only_by_rounding)
+
+
+analiza_porownawcza <- dane_deduplicated |>
+  group_by(make, model, year, engine_vol, miles_rounded, seller_type) |>
+  # zostawiamy tylko te grupy, w których nastąpiła redukcja
+  dplyr::filter(any(row_id %in% ids_rejected_only_by_rounding)) |>
+  ungroup() |>
+  # informacja, który wiersz został ostatecznie usunięty 
+  mutate(status = ifelse(row_id %in% ids_rejected_only_by_rounding, "REJECTED", "KEPT")) |>
+  # sortowanie, aby widzieć pary obok siebie
+  dplyr::arrange(make, model, year, miles_rounded, status) |>
+  dplyr::select(status, make, model, year, miles, car_price, n_equipment,
+                na_count, row_id, everything())
+
+head(analiza_porownawcza, 10)
+
+dane_deduplicated_final <- dane_deduplicated_rounded |> 
+  dplyr::select(-c(na_count, row_id, miles_rounded, n_equipment))
+
+nrow(dane_deduplicated_final)
+```
+
+## Braki danych
+
+```{r}
+
+na2 <- dane_deduplicated_final |>
+  summarise(across(everything(), ~ mean(is.na(.)))) |>
+  pivot_longer(everything(),
+               names_to = "kolumna",
+               values_to = "procent_na")
+
+na2_plot <- na2 |>
+  dplyr::filter(procent_na > 0) |> 
+  arrange(procent_na) |>
+  mutate(
+    kolumna = factor(kolumna, levels = unique(kolumna))
+  )
+
+b2 <- ggplot(na2_plot, aes(y = kolumna))+
+  geom_col(aes(x = procent_na), fill = "navy", na.rm = TRUE)+
+  geom_text(
+    aes(
+      x = procent_na,
+      label = case_when(
+        procent_na < 0.001 ~ "< 0,1%",
+        TRUE ~ percent(procent_na, accuracy = 0.01, decimal.mark = ",")
+      )
+    ),
+    vjust = 0.5,
+    hjust = -0.08,
+    size = 3,
+    fontface = "bold"
+  )+
+  scale_x_continuous(
+    labels = percent,
+    expand = expansion(mult = c(0, 0.15))
+  )+
+  labs(
+    y = "",
+    x = "Braki danych [%]"
+  )+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7),
+    axis.text.y = element_text(color = "black", size = 8)
+  )
+b2
+
+ggsave(
+  filename = "template_latex/rys/b2.pdf",
+  plot = b2,
+  width = width_single,
+  height = height_single,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+## Obsługa brakujących danych
+
+### Sprawdzanie wzorców występowania braków
+
+```{r}
+
+mdp <- dane_deduplicated_final |> 
+  dplyr::select(year, miles, engine_vol, num_owner, engine_kW)
+
+mp <- md.pattern(mdp, plot = FALSE)
+
+core_mp <- mp[-nrow(mp), -ncol(mp)]
+
+etykiety_y <- rownames(core_mp) 
+ile_wzorcow <- nrow(core_mp)
+
+df_plot <- as.data.frame(core_mp) |>
+  mutate(
+    Pattern_Index = row_number()
+  ) |>
+  pivot_longer(
+    cols = -Pattern_Index, 
+    names_to = "Zmienna", 
+    values_to = "Status"
+  )
+
+df_plot$Pattern_Index <- factor(df_plot$Pattern_Index,
+                                levels = rev(1:ile_wzorcow))
+
+mdp1 <- ggplot(df_plot, aes(x = Zmienna, y = Pattern_Index, fill = factor(Status)))+
+  geom_tile(color = "black")+
+  scale_fill_manual(
+    values = c("1" = "#2eb0e8", "0" = "#E06666"), 
+    labels = c("1" = "Dane obecne", "0" = "Brak danych")
+  )+
+  scale_y_discrete(labels = setNames(etykiety_y, 1:ile_wzorcow))+
+  theme_minimal(base_size = 8)+
+  labs(
+    x = "",
+    y = "",
+    fill = "Status danych"
+  )+
+  theme(
+    axis.text.x = element_text(angle = 0, size = 8, color = "black"),
+    axis.text.y = element_text(size = 8, color = "black"),
+    panel.grid = element_blank(),
+    legend.key.spacing.y = unit(0.1, "cm")
+  )
+mdp1
+
+ggsave(
+  filename = "template_latex/rys/mdp1.pdf",
+  plot = mdp1,
+  width = width_single,
+  height = height_single,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+Braki w `num_owner` wyglądają na losowe.
+
+Imputacja danych byłaby czasochłonna i nieskuteczna w przypadku zmiennych o takiej charakterystyce, jak rok produkcji i jednocześnie przebieg, czyli najczęściej obecny wzorzec występowania braków. **Usunięto zatem kolumnę** `num_owner` a resztę wybrakowanych obserwacji wśród pozostałych zmiennych zwyczajnie wyeliminowano ze zbioru danych w celu zachowania jednolitej i czystej finalnej struktury danych.
+
+```{r}
+
+cor(dane_deduplicated_final$num_owner,
+    dane_deduplicated_final$car_price, use = "complete.obs")
+```
+
+```{r}
+
+dane_cleaned1 <- dane_deduplicated_final |> 
+  dplyr::select(-num_owner)
+```
+
+Druga część wzorców braków
+
+```{r}
+
+mdp1 <- dane_cleaned1 |> 
+  dplyr::select(year, miles, engine_vol, engine_kW)
+
+mp <- md.pattern(mdp1, plot = FALSE)
+
+core_mp <- mp[-nrow(mp), -ncol(mp)]
+
+etykiety_y <- rownames(core_mp) 
+ile_wzorcow <- nrow(core_mp)
+
+df_plot <- as.data.frame(core_mp) |>
+  mutate(
+    Pattern_Index = row_number()
+  ) |>
+  pivot_longer(
+    cols = -Pattern_Index, 
+    names_to = "Zmienna", 
+    values_to = "Status"
+  )
+
+df_plot$Pattern_Index <- factor(df_plot$Pattern_Index,
+                                levels = rev(1:ile_wzorcow))
+
+mdp2 <- ggplot(df_plot, aes(x = Zmienna, y = Pattern_Index, fill = factor(Status)))+
+  geom_tile(color = "black")+
+  scale_fill_manual(
+    values = c("1" = "#2eb0e8", "0" = "#E06666"), 
+    labels = c("1" = "Dane obecne", "0" = "Brak danych")
+  )+
+  scale_y_discrete(labels = setNames(etykiety_y, 1:ile_wzorcow))+
+  theme_minimal(base_size = 8)+
+  labs(
+    x = "",
+    y = "",
+    fill = "Status danych"
+  )+
+  theme(
+    axis.text.x = element_text(angle = 0, size = 8, color = "black"),
+    axis.text.y = element_text(size = 8, color = "black"),
+    panel.grid = element_blank(),
+    legend.key.spacing.y = unit(0.1, "cm")
+  )
+mdp2
+
+ggsave(
+  filename = "template_latex/rys/mdp2.pdf",
+  plot = mdp2,
+  width = width_single,
+  height = height_single,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+```{r}
+
+dane_final <- na.omit(dane_cleaned1)
+
+nrow(dane_final)
+```
+
+## Duplikaty po oczyszczeniu
+
+```{r}
+
+sum(duplicated(dane_final))
+```
+
+## Braki po oczyszczeniu
+
+```{r}
+
+sum(is.na(dane_final))
+```
+
+Zamiana `make` i `model` na kategorię oraz usunięcie starych poziomów kategorii po filtracjach
+
+```{r}
+
+dane_final$make <- as.factor(dane_final$make)
+dane_final$model <- as.factor(dane_final$model)
+
+dane_final <- droplevels(dane_final)
+```
+
+## Podsumowanie operacji czyszczących dane
+
+```{r}
+
+podsumowanie_cleaning <- data.frame(
+  "Etap" = c(
+    "Wczytanie danych",
+    "Eliminacja błędnych wartości",
+    "Filtracja dziedzinowa",
+    "Filtracja anomalii wielowymiarowych",
+    "Usuwanie duplikatów",
+    "Usuwanie braków danych"
+    ),
+  "Liczba obserwacji" = c(
+    nrow(dane),
+    nrow(dane_real),
+    nrow(dane_filtered),
+    nrow(dane_cleaned),
+    nrow(dane_deduplicated_final),
+    nrow(dane_final)
+  ),
+  "Usunięte rekordy" = c(
+    "-",
+    nrow(dane) - nrow(dane_real),
+    nrow(dane_real) - nrow(dane_filtered),
+    nrow(dane_filtered) - nrow(dane_cleaned),
+    nrow(dane_cleaned) - nrow(dane_deduplicated_final),
+    nrow(dane_deduplicated_final) - nrow(dane_final)
+  ),
+  row.names = NULL
+)
+
+podsumowanie_cleaning
+```
+
+## Przygotowanie danych
+
+Logarytmowanie ceny pojazdu `car_price`
+
+```{r}
+
+dane_modelowe <- dane_final |> 
+  mutate(car_price = log(car_price))
+
+saveRDS(dane_modelowe, "dane/dane_modelowe.rds")
+```
+
+## Podział zbioru train, validation, test (70%, 15%, 15%)
+
+```{r}
+
+set.seed(2027)
+
+split <- initial_validation_split(
+  dane_modelowe,
+  prop = c(0.7, 0.15),
+  strata = car_price
+)
+
+saveRDS(split, "dane/split.rds")
+
+train <- training(split)
+validation <- validation(split)
+test <- testing(split)
+
+cat("Train:       ", nrow(train), "\n",
+    "Validation:  ", nrow(validation), "\n",
+    "Test:        ", nrow(test), "\n", sep = "")
+
+# weryfikacja zbioru walidacyjnego
+validation_set_tuning <- validation_set(split = split)
+
+v <- assessment(validation_set_tuning$splits[[1]])
+
+# sprawdzenie liczby wierszy i kolumn
+dim(v)
+dim(validation)
+
+# sprawdzenie identyczności zbiorów walidacyjnych
+all.equal(v, validation)
+
+metryki <- metric_set(rsq, mae, rmse, mape)
+```
+
+Podsumowanie podziału na zbiory
+
+```{r}
+
+lista_zbiorow <- list(
+  Treningowy = train,
+  Walidacyjny = validation,
+  Testowy = test
+)
+
+tabela <- map_df(lista_zbiorow, function(df)
+{
+  df |> 
+    summarise(
+      "Liczba obserwacji" = n(),
+      "Średnia" = round(mean(car_price, na.rm = TRUE), 2),
+      "Mediana" = round(median(car_price, na.rm = TRUE), 2),
+      "Odchylenie std." = round(sd(car_price, na.rm = TRUE), 2)
+      )
+}, .id = "Zbiór danych")
+
+tabela
+```
+
+# Wizualizacje na train
+
+## Rozkłady zmiennych numerycznych
+
+### `car_price`
+
+```{r}
+
+price_train <- train |> 
+  ggplot(aes(x = exp(car_price)))+
+  geom_density(fill = "#f4a261", alpha = 0.6,
+               color = "black", linewidth = 0.2)+
+  geom_vline(
+    aes(xintercept = median(exp(car_price), na.rm = TRUE)),
+    color = "#d10015",
+    linetype = "solid",
+    linewidth = 0.5
+  )+
+  geom_vline(
+    aes(xintercept = mean(exp(car_price), na.rm = TRUE)),
+    color = "#0802bf",
+    linetype = "dashed",
+    linewidth = 0.5
+  )+
+  scale_x_log10(
+  breaks = c(1000, 10000, 50000, 200000),
+  labels = c("1 tys.", "10 tys.", "50 tys.", "200 tys.")
+)+
+  labs(
+    #title = "Rozkład logarytmu ceny pojazdów",
+    x = "Cena [GBP]",
+    y = "Gęstość"
+  )+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.title.y = element_blank(),
+  )
+price_train
+
+ggsave(
+  filename = "template_latex/rys/price_train.pdf",
+  plot = price_train,
+  width = 12,
+  height = 6,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+### Predyktory numeryczne
+
+```{r}
+
+kolor <- "#3b3b98"
+
+# Rok produkcji
+p_year <- ggplot(train, aes(x = year))+
+  geom_histogram(binwidth = 1, fill = kolor, color = "white", linewidth = 0.1)+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )+
+  scale_y_continuous(labels = tys)+
+  labs(
+    x = "Rok produkcji",
+    y = NULL
+  )
+p_year
+
+
+# Przebieg
+p_miles <- ggplot(train, aes(x = miles))+
+  geom_histogram(bins = 40, fill = kolor, color = "white", linewidth = 0.1)+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )+
+  scale_x_continuous(labels = tys)+
+  scale_y_continuous(labels = tys)+
+  labs(
+    x = "Przebieg [mi]",
+    y = NULL
+  )
+p_miles
+
+
+# Pojemność silnika
+p_vol <- ggplot(train, aes(x = engine_vol))+
+  geom_histogram(bins = 40, fill = kolor, color = "white", linewidth = 0.1)+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )+
+  scale_y_continuous(labels = tys)+
+  labs(
+    x = "Pojemność silnika [l]",
+    y = NULL
+  )
+p_vol
+
+
+# Moc silnika
+p_kw <- ggplot(train, aes(x = engine_kW))+
+  geom_histogram(bins = 40, fill = kolor, color = "white", linewidth = 0.1)+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )+
+  scale_y_continuous(labels = tys)+
+  labs(
+    x = "Moc silnika [kW]",
+    y = NULL
+  )
+p_kw
+
+ggsave(
+  filename = "template_latex/rys/train_hist_rok.pdf",
+  plot = p_year,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = "template_latex/rys/train_hist_przebieg.pdf",
+  plot = p_miles,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = "template_latex/rys/train_hist_pojemnosc.pdf",
+  plot = p_vol,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = "template_latex/rys/train_hist_moc.pdf",
+  plot = p_kw,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+## Wpływ zmiennych na cenę
+
+### `make`
+
+```{r}
+
+makes_prices <- train |>
+  mutate(makes = if_else(make %in% (train |>
+                                      count(make, sort = TRUE) |>
+                                      slice_head(n = 20) |>
+                                      pull(make)), make, "Pozostałe")) |>
+  group_by(makes) |>
+  summarise(
+    n = n(),
+    mean_price = round(mean(exp(car_price), na.rm = TRUE)),
+    .groups = "drop"
+  ) |>
+  mutate(
+    percent = n / sum(n),
+    fill = ifelse(makes == "Pozostałe", "Pozostałe", "Inne")
+  )
+
+
+ggplot(makes_prices, aes(x = reorder(makes, percent), y = mean_price, fill = fill))+
+  geom_col()+
+  geom_text(
+    aes(label = mean_price),
+    hjust = -0.05,
+    size = 4
+  )+
+  scale_fill_manual(values = c("Pozostałe" = "#d41500", "Inne" = "#015216"))+
+  coord_flip()+
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.15)),
+    breaks = c(1e4, 2e4, 3e4, 4e4),
+    labels = c("10 tys.", "20 tys.", "30 tys.", "40 tys.")
+  )+
+  labs(
+    #title = "Średnie ceny samochodów dla 20 najczęściej występujących marek",
+    x = "Marka pojazdu",
+    y = "Średnia cena [GBP]"
+  )+
+  guides(fill = "none")+
+  theme_minimal(base_size = 8)
+```
+
+### `body_type`
+
+```{r}
+
+body_types <- train |>
+  mutate(body_type = fct_infreq(body_type), #sortowanie malejąco
+         body_type = fct_rev(body_type), #odwrócenie bo coord_flip()
+         body_type = fct_na_value_to_level(body_type, level="BRAK DANYCH"))
+
+cats <- levels(body_types$body_type)
+
+fill_colors <- setNames(
+  c("#737373", hcl.colors(length(cats) - 1, palette = "Zissou 1")),
+  c("BRAK DANYCH", cats[cats != "BRAK DANYCH"])
+)
+
+
+ggplot(body_types, aes(x = body_type, y = exp(car_price), fill = body_type))+
+  geom_boxplot()+
+  scale_y_log10(
+    breaks = c(1e3, 1e4, 5e4, 2e5),
+    labels = c("1 tys.", "10 tys.", "50 tys.", "200 tys.")
+  )+
+  coord_flip()+
+  scale_fill_manual(values = fill_colors)+
+  theme(legend.position = "none")+
+  labs(
+    #title = "Wpływ typu nadwozia na cenę samochodu (skala logarytmiczna)",
+    x = "Typ nadwozia",
+    y = "Cena [GBP]",
+    fill = "Typ nadwozia"
+  )
+```
+
+### `fuel_type`
+
+```{r}
+
+fuel_types <- train |>
+  mutate(fuel_type = fct_infreq(fuel_type), #sortowanie malejąco
+         fuel_type = fct_rev(fuel_type), #odwrócenie bo coord_flip()
+        fuel_type = fct_na_value_to_level(fuel_type, level = "BRAK DANYCH"))
+
+
+p2 <- ggplot(fuel_types, aes(x = fuel_type, y = exp(car_price),
+                             fill = fuel_type))+
+  geom_violin()+
+  scale_y_log10(
+    breaks = c(1e3, 1e4, 5e4, 2e5),
+    labels = c("1 tys.", "10 tys.", "50 tys.", "200 tys.")
+  )+
+  coord_flip()+
+  scale_fill_manual(values = c("BRAK DANYCH" = "#737373",
+                               "benzyna" = "#5102cf",
+                               "diesel" = "#cf0217",
+                               "hybryda benzyna" = "#8707e8",
+                               "elektryczny" = "#0ce7eb",
+                               "hybryda plug-in benzyna" = "#af00db",
+                               "hybryda diesel" = "#e6a100",
+                               "hybryda plug-in diesel" = "#edd500",
+                               "dwupaliwowy" = "#00b533",
+                               "wodór" = "#025af2"))+
+  labs(
+    #title = "Wpływ typu paliwa na cenę samochodu",
+    x = "Paliwo",
+    y = "Cena [GBP]",
+    fill = "Paliwo"
+  )+
+  theme_minimal(base_size = 8)+
+  theme(legend.position = "none")
+```
+
+### `miles`
+
+```{r}
+
+mileages <- train |>
+  mutate(group = case_when(
+    (is.na(miles)) ~ "BRAK DANYCH",
+    (miles < 10000) ~ "< 10 tys.",
+    (miles <= 50000) ~ "10–50 tys.",
+    (miles <= 100000) ~ "50–100 tys.",
+    (miles <= 150000) ~ "100–150 tys.",
+    (miles <= 210000) ~ "150–210 tys."
+  ),
+  mileage_group = factor(
+      group,
+      levels = c(
+        "BRAK DANYCH",
+        "< 10 tys.",
+        "10–50 tys.",
+        "50–100 tys.",
+        "100–150 tys.",
+        "150–210 tys."
+        ))
+  ) |> 
+  mutate(mileage_group = fct_rev(mileage_group)) #odwrócenie bo coord_flip()
+
+
+ggplot(mileages, aes(x = mileage_group, y = exp(car_price),
+                     fill = mileage_group))+
+  geom_violin()+
+  scale_y_log10(
+    breaks = c(1e3, 1e4, 5e4, 2e5),
+    labels = c("1 tys.", "10 tys.", "50 tys.", "200 tys.")
+  )+
+  coord_flip()+
+  scale_fill_manual(values = c(
+                               "BRAK DANYCH" = "#858585",
+                               "< 10 tys." = "#269dff",
+                               "10–50 tys." = "forestgreen", 
+                               "50–100 tys." = "#13e800",
+                               "100–150 tys." = "#f0d20e",
+                               "150–210 tys." = "orange"
+                               ))+
+  labs(
+    #title = "Wpływ przebiegu na cenę samochodu",
+    x = "Przebieg [km]",
+    y = "Cena [GBP]",
+    fill = "Przebieg [km]"
+  )+
+  theme_minimal(base_size = 8)+
+  theme(legend.position = "none")
+```
+
+### `engine_vol`
+
+```{r}
+
+vols <- train |>
+  mutate(group = case_when(
+    (is.na(engine_vol)) ~ "BRAK DANYCH",
+    (engine_vol < 1) ~ "< 1.0",
+    (engine_vol >= 1 & engine_vol <= 1.5) ~ "1.0–1.5",
+    (engine_vol >= 1.6 & engine_vol <= 2) ~ "1.6–2.0",
+    (engine_vol >= 2.1 & engine_vol <= 3) ~ "2.1–3.0",
+    (engine_vol >= 3.1 & engine_vol <= 4) ~ "3.1–4.0",
+    (engine_vol > 4) ~ "> 4.0",
+  ),
+  vol_group = factor(
+      group,
+      levels = c(
+        "BRAK DANYCH",
+        "< 1.0",
+        "1.0–1.5",
+        "1.6–2.0",
+        "2.1–3.0",
+        "3.1–4.0",
+        "> 4.0"))
+  ) |> 
+  mutate(vol_group = fct_rev(vol_group)) #odwrócenie bo coord_flip()
+
+
+ggplot(vols, aes(x = vol_group, y = exp(car_price), fill = vol_group))+
+  geom_violin()+
+  scale_y_log10(
+    breaks = c(1e3, 1e4, 5e4, 2e5),
+    labels = c("1 tys.", "10 tys.", "50 tys.", "200 tys.")
+  )+
+  coord_flip()+
+  scale_fill_manual(values = c(
+                               "BRAK DANYCH" = "#858585",
+                               "< 1.0" = "#d41500",
+                               "1.0–1.5" = "orange", 
+                               "1.6–2.0" = "#f0d20e",
+                               "2.1–3.0" = "#13e800",
+                               "3.1–4.0" = "forestgreen",
+                               "> 4.0" = "#269dff"
+                               ))+
+  theme_minimal(base_size = 8)+
+  theme(legend.position = "none")+
+  labs(
+    #title = "Wpływ pojemności silnika na cenę samochodu",
+    x = expression("Pojemność silnika ["*dm^3*"]"),
+    y = "Cena [GBP]",
+    fill = expression("Pojemność silnika ["*dm^3*"]")
+  )
+```
+
+### `engine_kW`
+
+```{r}
+
+powers <- train |>
+  mutate(group = case_when(
+    (is.na(engine_kW)) ~ "BRAK DANYCH",
+    (engine_kW < 50) ~ "< 50",
+    (engine_kW >= 50 & engine_kW <= 100) ~ "50–100",
+    (engine_kW >= 100 & engine_kW <= 200) ~ "100–200",
+    (engine_kW >= 200 & engine_kW <= 300) ~ "200–300",
+    (engine_kW >= 300 & engine_kW <= 400) ~ "300–400",
+    (engine_kW > 400) ~ "> 400",
+  ),
+  power_group = factor(
+      group,
+      levels = c(
+        "BRAK DANYCH",
+        "< 50",
+        "50–100",
+        "100–200",
+        "200–300",
+        "300–400",
+        "> 400"))
+  ) |> 
+  mutate(power_group = fct_rev(power_group)) #odwrócenie bo coord_flip()
+
+
+ggplot(powers, aes(x = power_group, y = exp(car_price),
+                   fill = power_group))+
+  geom_violin()+
+  scale_y_log10(
+    breaks = c(1e3, 1e4, 5e4, 2e5),
+    labels = c("1 tys.", "10 tys.", "50 tys.", "200 tys.")
+  )+
+  coord_flip()+
+  scale_fill_manual(values = c(
+                               "BRAK DANYCH" = "#858585",
+                               "< 50" = "#d41500",
+                               "50–100" = "orange", 
+                               "100–200" = "#f0d20e",
+                               "200–300" = "#13e800",
+                               "300–400" = "forestgreen",
+                               "> 400" = "#269dff"
+                               ))+
+  theme_minimal(base_size = 8)+
+  theme(legend.position = "none")+
+  labs(
+    #title = "Wpływ mocy silnika na cenę samochodu",
+    x = "Moc silnika [kW]",
+    y = "Cena [GBP]",
+    fill = "Moc silnika [kW]"
+  )
+```
+
+## Kategoryczne
+
+### `transmission`
+
+```{r}
+
+transmissions <- train |>
+  mutate(transmission = fct_infreq(transmission), #sortowanie malejąco
+         transmission = fct_rev(transmission),  #odwrócenie bo coord_flip()
+         transmission = fct_na_value_to_level(transmission,
+                                              level = "BRAK DANYCH"))
+
+
+transmissions <- train |>
+  mutate(
+    transmission = factor(
+      transmission,
+      levels = c("automatyczna", "manualna"),
+      labels = c("Automatyczna", "Manualna")
+    )
+  )
+
+p1 <- ggplot(transmissions, aes(x = transmission, y = exp(car_price),
+                                fill = transmission))+
+  geom_violin(color = "black", linewidth = 0.2)+
+  geom_boxplot(
+    width = 0.4,
+    color = "black",
+    linewidth = 0.2,
+    fill = "white",
+    alpha = 0.2,
+    outlier.shape = NA
+  )+
+  scale_y_log10(
+    breaks = c(1e3, 1e4, 5e4, 2e5),
+    labels = c("1 tys.", "10 tys.", "50 tys.", "200 tys.")
+  )+
+  scale_fill_manual(values = c("Automatyczna" = "#00d438",
+                               "Manualna" = "#eb4c1c")
+  )+
+  guides(fill = guide_legend(reverse = TRUE))+
+  labs(
+    #title = "Wpływ rodzaju skrzyni biegów na cenę samochodu",
+    x = "Typ skrzyni biegów",
+    y = "Cena [GBP]",
+    #fill = "Typ skrzyni biegów"
+  )+
+  theme_minimal(base_size = 8)+
+  theme(legend.position = "none",
+        axis.title = element_text(size = 8),
+        axis.text = element_text(size = 7)
+        )
+
+ggsave(
+  filename = "template_latex/rys/transmission.pdf",
+  plot = p1,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+### `style_pack`
+
+```{r}
+
+style_pack <- train |>
+  mutate(
+    style_pack = factor(
+      style_pack,
+      levels = c("1", "0"),
+      labels = c("Pakiet stylistyczny", "Brak")
+    )
+  )
+
+
+p2 <- style_pack |> 
+  ggplot(aes(x = style_pack, y = exp(car_price), fill = style_pack))+
+  geom_violin(color = "black", linewidth = 0.2)+
+  geom_boxplot(
+    width = 0.35,
+    color = "black",
+    linewidth = 0.2,
+    fill = "white",
+    alpha = 0.2,
+    outlier.shape = NA
+  )+
+  scale_y_log10(
+    breaks = c(1e3, 1e4, 5e4, 2e5),
+    labels = c("1 tys.", "10 tys.", "50 tys.", "200 tys.")
+  )+
+  scale_fill_manual(values = c("Pakiet stylistyczny" = "#00d438",
+                               "Brak" = "#eb4c1c")
+  )+
+  labs(
+    #title = "Wpływ typu sprzedawcy na cenę samochodu",
+    x = "Obecność pakietu stylistycznego",
+    y = "Cena [GBP]",
+    #fill = "Obecność pakietu stylistycznego"
+  )+
+  theme_minimal(base_size = 8)+
+  theme(legend.position = "none",
+        axis.title = element_text(size = 8),
+        axis.text = element_text(size = 7)
+  )
+
+ggsave(
+  filename = "template_latex/rys/style_pack.pdf",
+  plot = p2,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+### `seller_type`
+
+```{r}
+
+seller_type <- train |>
+  mutate(
+    seller_type = factor(
+      seller_type,
+      levels = c("prywatny", "zawodowy"),
+      labels = c("Osoba prywatna", "Zawodowy")
+    )
+  )
+
+
+p3 <- seller_type |> 
+  ggplot(aes(x = seller_type, y = exp(car_price), fill = seller_type))+
+  geom_violin(color = "black", linewidth = 0.2)+
+  geom_boxplot(
+    width = 0.4,
+    color = "black",
+    linewidth = 0.2,
+    fill = "white",
+    alpha = 0.2,
+    outlier.shape = NA
+  )+
+  scale_y_log10(
+    breaks = c(1e3, 1e4, 5e4, 2e5),
+    labels = c("1 tys.", "10 tys.", "50 tys.", "200 tys.")
+  )+
+  scale_fill_manual(values = c("Osoba prywatna" = "#eb4c1c",
+                               "Zawodowy" = "#00d438")
+  )+
+  labs(
+    #title = "Wpływ typu sprzedawcy na cenę samochodu",
+    x = "Typ sprzedawcy pojazdu",
+    y = "Cena [GBP]",
+    #fill = "Typ sprzedawcy pojazdu"
+  )+
+  theme_minimal(base_size = 8)+
+  theme(legend.position = "none",
+        axis.title = element_text(size = 8),
+        axis.text = element_text(size = 7)
+  )
+
+ggsave(
+  filename = "template_latex/rys/seller_type.pdf",
+  plot = p3,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+### `damage_category`
+
+```{r}
+
+damage_category <- train |>
+  mutate(
+    damage_category = factor(
+      damage_category,
+      levels = c("strukturalne", "niestrukturalne", "brak"),
+      labels = c("S/C", "N/D", "Brak")
+    )
+  )
+
+
+p4 <- damage_category |> 
+  ggplot(aes(x = damage_category, y = exp(car_price), fill = damage_category))+
+  geom_violin(color = "black", linewidth = 0.2)+
+  geom_boxplot(
+    width = 0.4,
+    color = "black",
+    linewidth = 0.2,
+    fill = "white",
+    alpha = 0.2,
+    outlier.shape = NA
+  )+
+  scale_y_log10(
+    breaks = c(1e3, 1e4, 5e4, 2e5),
+    labels = c("1 tys.", "10 tys.", "50 tys.", "200 tys.")
+  )+
+  scale_fill_manual(values = c("S/C" = "#f0bc24",
+                               "N/D" = "#eb4c1c",
+                               "Brak" = "#00d438")
+  )+
+  labs(
+    #title = "Wpływ strukturalnej kategorii ubezpieczeniowej na cenę samochodu",
+    x = "Typ kategorii ubezpieczeniowej",
+    y = "Cena [GBP]",
+    #fill = "Kategoria ubezpieczeniowa"
+  )+
+  theme_minimal(base_size = 8)+
+  theme(legend.position = "none",
+        axis.title = element_text(size = 8),
+        axis.text = element_text(size = 7)
+  )
+
+ggsave(
+  filename = "template_latex/rys/damage_category.pdf",
+  plot = p4,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+```{r}
+
+(p1 + p2) / (p3 + p4)
+```
+
+## Korelacje zmiennych objaśniających
+
+```{r}
+
+kor <- train |> 
+  dplyr::select(where(is.numeric))
+
+kor <- cor(kor, use = "complete.obs")
+
+ord <- order(colnames(kor))
+kor_o <- kor[ord, ord]
+n <- ncol(kor_o)
+
+
+trace("colorlegend", where = asNamespace("corrplot"), print = FALSE,
+      tracer = quote({
+        v <- as.numeric(labels)
+        labels <- ifelse(abs(v - round(v)) < 1e-9,
+                         sprintf("%d", as.integer(round(v))), # -1, 0, 1 bez przecinka
+                         formatC(v, format = "f", digits = 1,
+                                 decimal.mark = ","))
+        labels <- sub("-", "\u2212", labels) # minus typograficzny
+      }))  
+
+cairo_pdf("template_latex/rys/kor.pdf",
+          width = 10/2.54, height = 8/2.54, pointsize = 8)
+
+par(lwd = 0.3)
+
+corrplot(kor_o,
+         method = "color",
+         col = colorRampPalette(c("#148ac9", "white", "#bd0b0b"))(200),
+         type = "upper",
+         diag = FALSE,
+         outline = FALSE,
+         addgrid.col = "black",
+         tl.col = "black",
+         tl.srt = 45,
+         tl.cex = 1, # czcionka 8pt (nazwy zmiennych)
+         cl.cex = 0.875, # czcionka 7pt (legenda)
+         order = "original", # kolejność ustawiona w `kor_o`
+         cl.ratio = 0.2,
+         cl.align.text = "l",
+         mar = c(0, 0, 0.3, 0))
+
+# współczynniki korelacji: przecinek, minus typograficzny, pogrubienie
+idx <- which(upper.tri(kor_o), arr.ind = TRUE)
+lab <- sub("-", "\u2212", formatC(kor_o[idx], format = "f", digits = 2, decimal.mark = ","))
+par(xpd = NA)
+for (i in seq_len(nrow(idx)))
+{
+  text(idx[i, "col"], n - idx[i, "row"] + 1,
+       labels = lab[i], cex = 1, font = 2, col = "black")
+}
+
+dev.off()
+
+corrplot(kor_o,
+         method = "color",
+         col = colorRampPalette(c("#148ac9", "white", "#bd0b0b"))(200),
+         type = "upper",
+         diag = FALSE,
+         outline = FALSE,
+         addgrid.col = "black",
+         tl.col = "black",
+         tl.srt = 45,
+         tl.cex = 1, # czcionka 8pt (nazwy zmiennych)
+         cl.cex = 0.875, # czcionka 7pt (legenda)
+         order = "original", # kolejność ustawiona w "kor_o"
+         cl.ratio = 0.2,
+         cl.align.text = "l",
+         mar = c(0, 0, 0.3, 0))
+
+# współczynniki korelacji: przecinek, minus typograficzny, pogrubienie
+idx <- which(upper.tri(kor_o), arr.ind = TRUE)
+lab <- sub("-", "\u2212", formatC(kor_o[idx], format = "f", digits = 2, decimal.mark = ","))
+par(xpd = NA)
+for (i in seq_len(nrow(idx)))
+{
+  text(idx[i, "col"], n - idx[i, "row"] + 1,
+       labels = lab[i], cex = 1, font = 2, col = "black")
+}
+```

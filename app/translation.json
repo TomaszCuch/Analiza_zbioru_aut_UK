@@ -1,0 +1,842 @@
+{
+  "languages": ["pl", "en", "de", "es", "fr", "it", "pt"],
+  "translation": [
+    {
+      "pl": "Asystent Wyceny Samochodów",
+      "en": "Car Valuation Assistant",
+      "de": "Fahrzeug-Bewertungsassistent",
+      "es": "Asistente de Valoración de Vehículos",
+      "fr": "Assistant d'évaluation de véhicules",
+      "it": "Assistente Valutazione Auto",
+      "pt": "Assistente de Avaliação de Veículos"
+    },
+    {
+      "pl": "Dane pochodzą z UK, październik 2022",
+      "en": "Data from the UK, October 2022",
+      "de": "Daten aus dem Vereinigten Königreich, Oktober 2022",
+      "es": "Datos del Reino Unido, octubre de 2022",
+      "fr": "Données du Royaume-Uni, octobre 2022",
+      "it": "Dati dal Regno Unito, ottobre 2022",
+      "pt": "Dados do Reino Unido, outubro de 2022"
+    },
+    {
+      "pl": "Język / Language:",
+      "en": "Language:",
+      "de": "Sprache / Language:",
+      "es": "Idioma / Language:",
+      "fr": "Langue / Language:",
+      "it": "Lingua / Language:",
+      "pt": "Idioma / Language:"
+    },
+    {
+      "pl": "Konfiguracja pojazdu",
+      "en": "Vehicle Configuration",
+      "de": "Fahrzeugkonfiguration",
+      "es": "Configuración del Vehículo",
+      "fr": "Configuration du véhicule",
+      "it": "Configurazione Veicolo",
+      "pt": "Configuração do Veículo"
+    },
+    {
+      "pl": "Oblicz i Wyjaśnij",
+      "en": "Calculate and Explain",
+      "de": "Berechnen und Erklären",
+      "es": "Calcular y Explicar",
+      "fr": "Calculer et Expliquer",
+      "it": "Calcola e Spiega",
+      "pt": "Calcular e Explicar"
+    },
+    {
+      "pl": "Prognozowana Wartość Rynkowa Pojazdu:",
+      "en": "Estimated Market Value of Vehicle:",
+      "de": "Geschätzter Marktwert des Fahrzeugs:",
+      "es": "Valor de Mercado Estimado del Vehículo:",
+      "fr": "Valeur marchande estimée du véhicule:",
+      "it": "Valore di Mercato Stimato del Veicolo:",
+      "pt": "Valor de Mercado Estimado do Veículo:"
+    },
+    {
+      "pl": "Lokalna dekompozycja (Break Down)",
+      "en": "Local Decomposition (Break Down)",
+      "de": "Lokale Dekompensation (Break Down)",
+      "es": "Descomposición Local (Break Down)",
+      "fr": "Décomposition locale (Break Down)",
+      "it": "Decomposizione Locale (Break Down)",
+      "pt": "Decomposição Local (Break Down)"
+    },
+    {
+      "pl": "Profil Ceteris Paribus",
+      "en": "Ceteris Paribus Profile",
+      "de": "Ceteris-Paribus-Profil",
+      "es": "Perfil Ceteris Paribus",
+      "fr": "Profil Ceteris Paribus",
+      "it": "Profilo Ceteris Paribus",
+      "pt": "Perfil Ceteris Paribus"
+    },
+    {
+      "pl": "Dlaczego model tak wycenił ten konkretny samochód?",
+      "en": "Why did the model price this specific car this way?",
+      "de": "Warum hat das Modell dieses Fahrzeug so bewertet?",
+      "es": "¿Por qué el modelo valoró este coche así?",
+      "fr": "Pourquoi le modèle a-t-il évalué cette voiture ainsi?",
+      "it": "Perché il modello ha valutato questa auto in questo modo?",
+      "pt": "Por que o modelo avaliou este carro dessa forma?"
+    },
+    {
+      "pl": "Cena [GBP]",
+      "en": "Price [GBP]",
+      "de": "Preis [GBP]",
+      "es": "Precio [GBP]",
+      "fr": "Prix [GBP]",
+      "it": "Prezzo [GBP]",
+      "pt": "Preço [GBP]"
+    },
+    {
+      "pl": "Jak zmieniłaby się cena, jeśli zmieniono wartość tylko jednej zmiennej?",
+      "en": "How would the price change if only one variable was modified?",
+      "de": "Wie würde sich der Preis ändern, wenn nur eine Variable geändert wird?",
+      "es": "¿Cómo cambiaría el precio si solo se modificara una variable?",
+      "fr": "Comment le prix changerait-il si une seule variable était modifiée?",
+      "it": "Come cambierebbe il prezzo se venisse modificata una sola variabile?",
+      "pt": "Como o preço mudaria se apenas uma variável fosse alterada?"
+    },
+    {
+      "pl": "Wartość zmiennej",
+      "en": "Variable Value",
+      "de": "Variablenwert",
+      "es": "Valor de la Variable",
+      "fr": "Valeur de la variable",
+      "it": "Valore della Variabile",
+      "pt": "Valor da Variável"
+    },
+    {
+      "pl": "Prognozowana cena auta",
+      "en": "Predicted Car Price",
+      "de": "Prognostizierter Auto-Preis",
+      "es": "Precio Predicho del Coche",
+      "fr": "Prix prédictif de la voiture",
+      "it": "Prezzo Stimato Auto",
+      "pt": "Preço Previsto do Carro"
+    },
+    {
+      "pl": "Wypełnij lub popraw zaznaczone pola przed obliczeniem!",
+      "en": "Fill in or correct the highlighted fields before calculating!",
+      "de": "Füllen Sie die markierten Felder aus oder korrigieren Sie sie vor der Berechnung!",
+      "es": "¡Complete o corrija los campos resaltados antes de calcular!",
+      "fr": "Remplissez ou corrigez les champs mis en évidence avant le calcul !",
+      "it": "Compila o correggi i campi evidenziati prima del calcolo!",
+      "pt": "Preencha ou corrija os campos destacados antes do cálculo!"
+    },
+    {
+      "pl": "Popraw czerwone pola (wartości poza zakresem modelu)!",
+      "en": "Fix red fields (values out of model range)!",
+      "de": "Korrigieren Sie die roten Felder (Werte außerhalb des Modellbereichs)!",
+      "es": "¡Corrija los campos rojos (valores fuera de rango)!",
+      "fr": "Corrigez les champs rouges (valeurs hors plage)!",
+      "it": "Correggi i campi rossi (valori fuori intervallo)!",
+      "pt": "Corrija os campos vermelhos (valores fora do limite)!"
+    },
+    {
+      "pl": "Zakres",
+      "en": "Range",
+      "de": "Bereich",
+      "es": "Rango",
+      "fr": "Plage",
+      "it": "Intervallo",
+      "pt": "Intervalo"
+    },
+    {
+      "pl": "Wszystkie",
+      "en": "All",
+      "de": "Alle",
+      "es": "Todos",
+      "fr": "Tous",
+      "it": "Tutti",
+      "pt": "Todos"
+    },
+    {
+      "pl": "inne",
+      "en": "other",
+      "de": "andere",
+      "es": "otros",
+      "fr": "autres",
+      "it": "altro",
+      "pt": "outros"
+    },
+    {
+      "pl": "tys.",
+      "en": "k",
+      "de": "Tsd.",
+      "es": "mil",
+      "fr": "k",
+      "it": "mila",
+      "pt": "mil"
+    },
+    {
+      "pl": "Marka",
+      "en": "Make",
+      "de": "Marke",
+      "es": "Marca",
+      "fr": "Marque",
+      "it": "Marca",
+      "pt": "Marca"
+    },
+    {
+      "pl": "Model",
+      "en": "Model",
+      "de": "Modell",
+      "es": "Modelo",
+      "fr": "Modèle",
+      "it": "Modello",
+      "pt": "Modelo"
+    },
+    {
+      "pl": "Rok produkcji",
+      "en": "Year of manufacture",
+      "de": "Baujahr",
+      "es": "Año de fabricación",
+      "fr": "Année de fabrication",
+      "it": "Anno di produzione",
+      "pt": "Ano de fabricação"
+    },
+    {
+      "pl": "Przebieg [mile]",
+      "en": "Mileage [miles]",
+      "de": "Kilometerstand [Meilen]",
+      "es": "Kilometraje [millas]",
+      "fr": "Kilométrage [miles]",
+      "it": "Chilometraggio [miglia]",
+      "pt": "Quilometragem [milhas]"
+    },
+    {
+      "pl": "Moc silnika [kW]",
+      "en": "Engine power [kW]",
+      "de": "Motorleistung [kW]",
+      "es": "Potencia del motor [kW]",
+      "fr": "Puissance du moteur [kW]",
+      "it": "Potenza motore [kW]",
+      "pt": "Potência do motor [kW]"
+    },
+    {
+      "pl": "Pojemność silnika [l]",
+      "en": "Engine capacity [l]",
+      "de": "Hubraum [l]",
+      "es": "Cilindrada [l]",
+      "fr": "Cylindrée [l]",
+      "it": "Cilindrata [l]",
+      "pt": "Cilindrada [l]"
+    },
+    {
+      "pl": "Skrzynia biegów",
+      "en": "Transmission",
+      "de": "Getriebe",
+      "es": "Caja de cambios",
+      "fr": "Boîte de vitesses",
+      "it": "Cambio",
+      "pt": "Caixa de câmbio"
+    },
+    {
+      "pl": "Rodzaj paliwa",
+      "en": "Fuel type",
+      "de": "Kraftstoffart",
+      "es": "Tipo de combustible",
+      "fr": "Type de carburant",
+      "it": "Tipo di carburante",
+      "pt": "Tipo de combustível"
+    },
+    {
+      "pl": "Typ nadwozia",
+      "en": "Body type",
+      "de": "Karosserieform",
+      "es": "Tipo de carrocería",
+      "fr": "Type de carrosserie",
+      "it": "Tipo di carrozzeria",
+      "pt": "Tipo de carroceria"
+    },
+    {
+      "pl": "Szyberdach",
+      "en": "Sunroof",
+      "de": "Schiebedach",
+      "es": "Techo solar",
+      "fr": "Toit ouvrant",
+      "it": "Tettuccio apribile",
+      "pt": "Teto solar"
+    },
+    {
+      "pl": "Skórzane wnętrze",
+      "en": "Leather interior",
+      "de": "Leder",
+      "es": "Cuero",
+      "fr": "Cuir",
+      "it": "Pelle",
+      "pt": "Couro"
+    },
+    {
+      "pl": "Podgrzewane siedzenia",
+      "en": "Heated seats",
+      "de": "Sitzheizung",
+      "es": "Asientos calefactables",
+      "fr": "Sièges chauffants",
+      "it": "Sedili riscaldati",
+      "pt": "Bancos aquecidos"
+    },
+    {
+      "pl": "Kamera",
+      "en": "Camera",
+      "de": "Kamera",
+      "es": "Cámara",
+      "fr": "Caméra",
+      "it": "Telecamera",
+      "pt": "Câmera"
+    },
+    {
+      "pl": "Klimatyzacja",
+      "en": "Air conditioning",
+      "de": "Klimaanlage",
+      "es": "Aire acondicionado",
+      "fr": "Climatisation",
+      "it": "Climatizzatore",
+      "pt": "Ar condicionado"
+    },
+    {
+      "pl": "Aluminiowe felgi",
+      "en": "Alloy rims",
+      "de": "Alufelgen",
+      "es": "Llantas de aleación",
+      "fr": "Jantes alliage",
+      "it": "Cerchi in lega",
+      "pt": "Rodas de liga leve"
+    },
+    {
+      "pl": "Nawigacja satelitarna",
+      "en": "Satellite navigation",
+      "de": "Navigation",
+      "es": "Navegador",
+      "fr": "Navigation",
+      "it": "Navigatore",
+      "pt": "Navegador"
+    },
+    {
+      "pl": "Integracja ze smartfonem",
+      "en": "Smartphone link",
+      "de": "Smartphone-Anbindung",
+      "es": "Conexión smartphone",
+      "fr": "Connexion smartphone",
+      "it": "Collegamento smartphone",
+      "pt": "Conexão smartphone"
+    },
+    {
+      "pl": "Światła laserowe/matrycowe",
+      "en": "Premium lights",
+      "de": "Premium-Scheinwerfer",
+      "es": "Luces premium",
+      "fr": "Phares premium",
+      "it": "Fari premium",
+      "pt": "Faróis premium"
+    },
+    {
+      "pl": "Cyfrowy wyświetlacz kierowcy",
+      "en": "Virtual cockpit",
+      "de": "Virtual Cockpit",
+      "es": "Cockpit virtual",
+      "fr": "Cockpit virtuel",
+      "it": "Cruscotto virtuale",
+      "pt": "Painel virtual"
+    },
+    {
+      "pl": "System audio klasy premium",
+      "en": "Premium audio",
+      "de": "Premium-Audiosystem",
+      "es": "Audio premium",
+      "fr": "Audio premium",
+      "it": "Audio premium",
+      "pt": "Áudio premium"
+    },
+    {
+      "pl": "Napęd na cztery koła",
+      "en": "Four-wheel drive (4WD)",
+      "de": "Allradantrieb",
+      "es": "Tracción 4x4",
+      "fr": "Quatre roues motrices",
+      "it": "Trazione integrale",
+      "pt": "Tração 4x4"
+    },
+    {
+      "pl": "Hak holowniczy",
+      "en": "Tow bar",
+      "de": "Anhängerkupplung",
+      "es": "Gancho de remolque",
+      "fr": "Attelage",
+      "it": "Gancio traino",
+      "pt": "Engate de reboque"
+    },
+    {
+      "pl": "Przyciemniane szyby",
+      "en": "Privacy glass",
+      "de": "Abgedunkelte Scheiben",
+      "es": "Cristales tintados",
+      "fr": "Vitres surteintées",
+      "it": "Vetri oscurati",
+      "pt": "Vidros de privacidade"
+    },
+    {
+      "pl": "Dostęp bezkluczykowy",
+      "en": "Keyless entry",
+      "de": "Keyless Entry",
+      "es": "Acceso sin llave",
+      "fr": "Accès sans clé",
+      "it": "Accesso Keyless",
+      "pt": "Chave presencial"
+    },
+    {
+      "pl": "Pakiet stylistyczny",
+      "en": "Style pack",
+      "de": "Styling-Paket",
+      "es": "Paquete de estilo",
+      "fr": "Pack style",
+      "it": "Pacchetto stile",
+      "pt": "Pacote de estilo"
+    },
+    {
+      "pl": "Wyświetlacz Head-Up",
+      "en": "Head-up display",
+      "de": "Head-Up-Display",
+      "es": "Pantalla Head-Up",
+      "fr": "Affichage tête haute",
+      "it": "Head-up display",
+      "pt": "Head-up display"
+    },
+    {
+      "pl": "Strefa czystego transportu (ULEZ)",
+      "en": "ULEZ",
+      "de": "ULEZ",
+      "es": "ULEZ",
+      "fr": "ULEZ",
+      "it": "ULEZ",
+      "pt": "ULEZ"
+    },
+    {
+      "pl": "Pełna historia serwisowa",
+      "en": "Full service history",
+      "de": "Vollst. Scheckheft",
+      "es": "Historial de servicio completo",
+      "fr": "Historique d'entretien complet",
+      "it": "Storico tagliandi completo",
+      "pt": "Histórico de serviço completo"
+    },
+    {
+      "pl": "Częściowa historia serwisowa",
+      "en": "Part service history",
+      "de": "Teilw. Scheckheft",
+      "es": "Historial de servicio parcial",
+      "fr": "Historique d'entretien partiel",
+      "it": "Storico tagliandi parziale",
+      "pt": "Histórico de serviço parcial"
+    },
+    {
+      "pl": "Częściowa gwarancja",
+      "en": "Part warranty",
+      "de": "Teilweise Garantie",
+      "es": "Garantía parcial",
+      "fr": "Garantie partielle",
+      "it": "Garanzia parziale",
+      "pt": "Garantia parcial"
+    },
+    {
+      "pl": "Serwisowany w ASO",
+      "en": "Full dealership history",
+      "de": "Scheckheft Vertragswerkstatt",
+      "es": "Historial concesionario oficial",
+      "fr": "Historique concessionnaire",
+      "it": "Storico concessionaria ufficiale",
+      "pt": "Histórico concessionária"
+    },
+    {
+      "pl": "Podatek drogowy za 1. rok",
+      "en": "First year road tax",
+      "de": "Kfz-Steuer 1. Jahr",
+      "es": "Impuesto de circulación 1er año",
+      "fr": "Taxe routière 1ère année",
+      "it": "Bollo auto 1° anno",
+      "pt": "Imposto de circulação 1º ano"
+    },
+    {
+      "pl": "Fabrycznie nowy",
+      "en": "Brand new",
+      "de": "Fabrikneu",
+      "es": "Nuevo de fábrica",
+      "fr": "Neuf d'usine",
+      "it": "Nuovo di fabbrica",
+      "pt": "Novo de fábrica"
+    },
+    {
+      "pl": "Dostępne finansowanie",
+      "en": "Finance available",
+      "de": "Finanzierung verfügbar",
+      "es": "Financiación disponible",
+      "fr": "Financement disponible",
+      "it": "Finanziamento disponibile",
+      "pt": "Financiamento disponível"
+    },
+    {
+      "pl": "Typ sprzedawcy pojazdu",
+      "en": "Seller type",
+      "de": "Verkäufertyp",
+      "es": "Tipo de vendedor",
+      "fr": "Type de vendeur",
+      "it": "Tipo di venditore",
+      "pt": "Tipo de vendedor"
+    },
+    {
+      "pl": "Kategoria uszkodzeń",
+      "en": "Damage category",
+      "de": "Schadenskategorie",
+      "es": "Categoría de daños",
+      "fr": "Catégorie de dommages",
+      "it": "Categoria danni",
+      "pt": "Categoria de danos"
+    },
+    {
+      "pl": "Wartość nie może być większa niż",
+      "en": "Value cannot be greater than",
+      "de": "Der Wert darf nicht größer sein als",
+      "es": "El valor no puede ser mayor que",
+      "fr": "La valeur ne peut pas être supérieure à",
+      "it": "Il valore non può essere superiore a",
+      "pt": "O valor não pode ser maior que"
+    },
+    {
+      "pl": "Wartość nie może być mniejsza niż",
+      "en": "Value cannot be less than",
+      "de": "Der Wert darf nicht kleiner sein als",
+      "es": "El valor no puede ser menor que",
+      "fr": "La valeur ne peut pas être inférieure à",
+      "it": "Il valore non può essere inferiore a",
+      "pt": "O valor não pode ser menor que"
+    },
+    {
+      "pl": "brak informacji",
+      "en": "no information",
+      "de": "keine Information",
+      "es": "sin información",
+      "fr": "pas d'information",
+      "it": "nessuna informazione",
+      "pt": "sem informação"
+    },
+    {
+      "pl": "kamper",
+      "en": "campervan",
+      "de": "wohnmobil",
+      "es": "autocaravana",
+      "fr": "camping-car",
+      "it": "camper",
+      "pt": "autocaravana"
+    },
+    {
+      "pl": "furgonetka osobowa",
+      "en": "passenger van",
+      "de": "personenkraftwagen (van)",
+      "es": "furgoneta de pasajeros",
+      "fr": "fourgonnette passagers",
+      "it": "furgone passeggeri",
+      "pt": "furgão de passageiros"
+    },
+    {
+      "pl": "kombivan",
+      "en": "leisure activity vehicle",
+      "de": "hochdachkombi",
+      "es": "furgoneta combi",
+      "fr": "ludospace",
+      "it": "multispazio",
+      "pt": "combi"
+    },
+    {
+      "pl": "kabriolet",
+      "en": "convertible",
+      "de": "cabriolet",
+      "es": "descapotable",
+      "fr": "cabriolet",
+      "it": "cabriolet",
+      "pt": "cabriolet"
+    },
+    {
+      "pl": "coupé",
+      "en": "coupé",
+      "de": "coupé",
+      "es": "cupé",
+      "fr": "coupé",
+      "it": "coupé",
+      "pt": "coupé"
+    },
+    {
+      "pl": "kombi",
+      "en": "estate",
+      "de": "kombi",
+      "es": "familiar",
+      "fr": "break",
+      "it": "station Wagon",
+      "pt": "carrinha"
+    },
+    {
+      "pl": "hatchback",
+      "en": "hatchback",
+      "de": "schrägheck",
+      "es": "hatchback",
+      "fr": "bicorps",
+      "it": "hatchback",
+      "pt": "hatchback"
+    },
+    {
+      "pl": "limuzyna",
+      "en": "limousine",
+      "de": "limousine",
+      "es": "limusina",
+      "fr": "limousine",
+      "it": "limousine",
+      "pt": "limousine"
+    },
+    {
+      "pl": "minibus",
+      "en": "minibus",
+      "de": "kleinbus",
+      "es": "minibús",
+      "fr": "minibus",
+      "it": "minibus",
+      "pt": "minibus"
+    },
+    {
+      "pl": "minivan",
+      "en": "minivan (mpv)",
+      "de": "minivan",
+      "es": "monovolumen",
+      "fr": "monospace",
+      "it": "monovolume",
+      "pt": "monovolume"
+    },
+    {
+      "pl": "furgon",
+      "en": "panel van",
+      "de": "kastenwagen",
+      "es": "furgón",
+      "fr": "fourgon",
+      "it": "furgone",
+      "pt": "furgão"
+    },
+    {
+      "pl": "pick-up 2-drzwiowy",
+      "en": "2-door pickup",
+      "de": "2-türiger pickup",
+      "es": "pick-up 2 puertas",
+      "fr": "pick-up 2 portes",
+      "it": "pick-up 2 porte",
+      "pt": "pick-up 2 portas"
+    },
+    {
+      "pl": "pick-up 4-drzwiowy",
+      "en": "4-door pickup",
+      "de": "4-türiger pickup",
+      "es": "pick-up 4 puertas",
+      "fr": "pick-up 4 portes",
+      "it": "pick-up 4 porte",
+      "pt": "pick-up 4 portas"
+    },
+    {
+      "pl": "sedan",
+      "en": "sedan / saloon",
+      "de": "stufenheck",
+      "es": "sedán",
+      "fr": "berline",
+      "it": "berlina",
+      "pt": "sedan"
+    },
+    {
+      "pl": "SUV",
+      "en": "SUV",
+      "de": "SUV",
+      "es": "SUV",
+      "fr": "SUV",
+      "it": "SUV",
+      "pt": "SUV"
+    },
+    {
+      "pl": "automatyczna",
+      "en": "automatic",
+      "de": "automatik",
+      "es": "automática",
+      "fr": "automatique",
+      "it": "automatico",
+      "pt": "automática"
+    },
+    {
+      "pl": "manualna",
+      "en": "manual",
+      "de": "manuell",
+      "es": "manual",
+      "fr": "manuelle",
+      "it": "manuale",
+      "pt": "manual"
+    },
+    {
+      "pl": "dwupaliwowy",
+      "en": "bi-fuel",
+      "de": "zweistoff (bi-fuel)",
+      "es": "bifuel",
+      "fr": "bicarburation",
+      "it": "bifuel",
+      "pt": "bi-combustível"
+    },
+    {
+      "pl": "diesel",
+      "en": "diesel",
+      "de": "diesel",
+      "es": "diésel",
+      "fr": "diesel",
+      "it": "diesel",
+      "pt": "diesel"
+    },
+    {
+      "pl": "hybryda diesel",
+      "en": "diesel hybrid",
+      "de": "diesel-hybrid",
+      "es": "híbrido diésel",
+      "fr": "hybride diesel",
+      "it": "ibrida diesel",
+      "pt": "híbrido diesel"
+    },
+    {
+      "pl": "hybryda plug-in diesel",
+      "en": "diesel plug-in hybrid",
+      "de": "diesel-Plug-in-Hybrid",
+      "es": "híbrido enchufable diésel",
+      "fr": "hybride rechargeable diesel",
+      "it": "ibrida plug-in diesel",
+      "pt": "híbrido plug-in diesel"
+    },
+    {
+      "pl": "elektryczny",
+      "en": "electric",
+      "de": "elektro",
+      "es": "eléctrico",
+      "fr": "electrique",
+      "it": "elettrica",
+      "pt": "elétrico"
+    },
+    {
+      "pl": "wodór",
+      "en": "hydrogen",
+      "de": "wasserstoff",
+      "es": "hidrógeno",
+      "fr": "hydrogène",
+      "it": "idrogeno",
+      "pt": "hidrogénio"
+    },
+    {
+      "pl": "benzyna",
+      "en": "petrol",
+      "de": "benzin",
+      "es": "gasolina",
+      "fr": "essence",
+      "it": "benzina",
+      "pt": "gasolina"
+    },
+    {
+      "pl": "hybryda benzyna",
+      "en": "petrol hybrid",
+      "de": "benzin-hybrid",
+      "es": "híbrido gasolina",
+      "fr": "hybride essence",
+      "it": "ibrida benzina",
+      "pt": "híbrido gasolina"
+    },
+    {
+      "pl": "hybryda plug-in benzyna",
+      "en": "petrol plug-in hybrid",
+      "de": "benzin-plug-in-Hybrid",
+      "es": "híbrido enchufable gasolina",
+      "fr": "hybride rechargeable essence",
+      "it": "ibrida plug-in benzina",
+      "pt": "híbrido plug-in gasolina"
+    },
+    {
+      "pl": "prywatny",
+      "en": "private seller",
+      "de": "privatverkäufer",
+      "es": "vendedor privado",
+      "fr": "vendeur particulier",
+      "it": "venditore privato",
+      "pt": "vendedor particular"
+    },
+    {
+      "pl": "zawodowy",
+      "en": "trade / dealer",
+      "de": "händler",
+      "es": "profesional / concesionario",
+      "fr": "professionnel",
+      "it": "concessionario",
+      "pt": "profissional"
+    },
+    {
+      "pl": "brak",
+      "en": "none",
+      "de": "keine",
+      "es": "ninguno",
+      "fr": "aucun",
+      "it": "nessuno",
+      "pt": "nenhum"
+    },
+    {
+      "pl": "niestrukturalne",
+      "en": "non-structural damage",
+      "de": "nicht-struktureller schaden",
+      "es": "daños no estructurales",
+      "fr": "dommages non structurels",
+      "it": "danni non strutturali",
+      "pt": "danos não estruturais"
+    },
+    {
+      "pl": "strukturalne",
+      "en": "structural damage",
+      "de": "struktureller schaden",
+      "es": "daños estructurales",
+      "fr": "dommages structurels",
+      "it": "danni strutturali",
+      "pt": "danos estruturais"
+    },
+    {
+      "pl": "tak",
+      "en": "yes",
+      "de": "ja",
+      "es": "sí",
+      "fr": "oui",
+      "it": "sì",
+      "pt": "sim"
+    },
+    {
+      "pl": "nie",
+      "en": "no",
+      "de": "nein",
+      "es": "no",
+      "fr": "non",
+      "it": "no",
+      "pt": "não"
+    },
+    {
+      "pl": "1",
+      "en": "yes",
+      "de": "ja",
+      "es": "sí",
+      "fr": "oui",
+      "it": "sì",
+      "pt": "sim"
+    },
+    {
+      "pl": "0",
+      "en": "no",
+      "de": "nein",
+      "es": "no",
+      "fr": "non",
+      "it": "no",
+      "pt": "não"
+    }
+  ]
+}

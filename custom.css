@@ -1,0 +1,33 @@
+a, .text-primary {
+  color: #0066cc !important;
+}
+
+a:hover {
+  color: #0066cc !important;
+}
+
+#TOC .nav-link.active {
+  color: #0066cc !important;
+  border-left-color: #0066cc !important;
+}
+
+#TOC .nav-link:hover {
+  color: #0066cc !important;
+}
+
+.btn-primary, 
+.code-tools-menu .dropdown-toggle {
+  background-color: #0066cc !important;
+  border-color: #0066cc !important;
+  color: #ffffff !important;
+}
+
+.btn-primary:hover, 
+.code-tools-menu .dropdown-toggle:hover {
+  background-color: #0066cc !important;
+  border-color: #0066cc !important;
+}
+
+h1, h2, h3, h4 {
+  color: #0066cc !important;
+}

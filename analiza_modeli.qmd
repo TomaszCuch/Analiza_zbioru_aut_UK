@@ -1,0 +1,2344 @@
+---
+title: "Analiza modeli"
+author: "Tomasz Cuch"
+format: html
+embed-resources: true
+self-contained-math: true
+editor: visual
+toc: true
+toc-location: left
+toc-title: "Spis treści"
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r, message=FALSE, warning=FALSE}
+
+# ustawienie domyślnego serwera CRAN
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+# instalacja remotes (jeśli nie ma)
+if (!requireNamespace("remotes", quietly = TRUE))
+{
+  install.packages("remotes")
+}
+
+# instalacja ParBayesianOptimization (jeśli nie ma)
+if (!requireNamespace("ParBayesianOptimization", quietly = TRUE))
+{
+  remotes::install_version(
+    "ParBayesianOptimization",
+    repos = "https://cloud.r-project.org"
+  )
+}  
+
+# instalacja CatBoost (jeśli nie ma)
+if (!requireNamespace("catboost", quietly = TRUE))
+{
+  remotes::install_github("catboost/catboost",
+                          subdir = "catboost/R-package")
+}
+```
+
+```{r, message=FALSE, warning=FALSE}
+
+# liczba rdzeni do budowy modeli, w moim przypadku 6
+cores <- 6
+
+Sys.setenv(TF_ENABLE_ONEDNN_OPTS = "0") # brak różnic w dokładności obliczeń
+Sys.setenv(PYTHONHASHSEED = "2027") # ziarno dla Python
+Sys.setenv(TF_CPP_MIN_LOG_LEVEL = "3") # tylko logi o błędach krytycznych tensorflow
+Sys.setenv(OMP_NUM_THREADS = as.character(cores)) # ograniczenie do 6 rdzeni
+Sys.setenv(TF_NUM_INTRAOP_THREADS = as.character(cores)) # 6 rdzeni do obliczeń mlp
+Sys.setenv(TF_NUM_INTEROP_THREADS = "1") # determinizm niezależnych obliczeń
+
+library(tidyverse)
+library(forcats)
+library(ggplot2)
+library(scales)
+library(patchwork)
+library(moments)
+library(corrplot)
+library(mice)
+library(tidymodels)
+library(embed)
+library(glmnet)
+library(future)
+library(ParBayesianOptimization)
+library(ranger)
+library(xgboost)
+library(lightgbm)
+library(catboost)
+library(DALEX)
+library(shapviz)
+library(tensorflow)
+library(keras3)
+library(ggrepel)
+
+# determinizm silnika tensorflow
+tf$config$experimental$enable_op_determinism()
+
+set.seed(2027)
+keras3::set_random_seed(2027)
+```
+
+```{r}
+
+# pojedynczy obrazek
+width_single <- 14
+height_single <- 8.5
+
+# 2 kolumny
+width_2 <- 7
+height_2 <- 6
+
+# 2 x 2
+width_2x2 <- 7
+height_2x2 <- 5
+
+unit <- "cm"
+```
+
+## Wczytanie danych
+
+```{r}
+
+set.seed(2027)
+
+dane_modelowe <- readRDS("dane/dane_modelowe.rds")
+
+split <- readRDS("dane/split.rds")
+
+train <- training(split)
+validation <- validation(split)
+test <- testing(split)
+
+# weryfikacja zbioru walidacyjnego
+validation_set_tuning <- validation_set(split)
+
+v <- assessment(validation_set_tuning$splits[[1]])
+
+# Sprawdzenie liczby wierszy i kolumn
+dim(v)
+dim(validation)
+
+# Sprawdzenie identyczności zbiorów walidacyjnych
+all.equal(v, validation)
+
+metryki <- metric_set(rsq, mae, rmse, mape)
+
+# split do early stopping
+set.seed(2027)
+
+train_split <- initial_split(
+  train,
+  prop = 0.9,
+  strata = car_price
+)
+
+train90 <- training(train_split)
+train_es <- testing(train_split)
+
+cat("Train: ", nrow(train90), "\n",
+    "Train early stopping: ", nrow(train_es), "\n", sep = "")
+
+options(scipen = 999)
+```
+
+## Regresja liniowa z Elastic Net
+
+```{r}
+
+tuning_elastic_net <- readRDS("tuning/tuning_elastic_net.rds")
+
+best_elastic_net <- select_best(tuning_elastic_net, metric = "rmse")
+
+cat("Najlepsze lambda (penalty) i alfa (mixture) - Elastic Net:")
+print(best_elastic_net) # penalty (lambda) i mixture (alfa)
+
+final_elastic_net_model <- readRDS("modele/final_elastic_net_model.rds")
+
+train_predictions_elastic_net <- augment(final_elastic_net_model, new_data = train) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_elastic_net_train <- metryki(
+  train_predictions_elastic_net, 
+  truth = price_gbp, 
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "Regresja liniowa (Elastic Net)",
+         zbior = "Treningowy")
+
+val_predictions_elastic_net <- augment(final_elastic_net_model, new_data = validation) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_elastic_net_val <- metryki(
+  val_predictions_elastic_net,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "Regresja liniowa (Elastic Net)",
+         zbior = "Walidacyjny")
+
+test_predictions_elastic_net <- augment(final_elastic_net_model, new_data = test) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_elastic_net_test <- metryki(
+  test_predictions_elastic_net, 
+  truth = price_gbp, 
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "Regresja liniowa (Elastic Net)",
+         zbior = "Testowy")
+
+wyniki_elastic_net <- bind_rows(wyniki_elastic_net_train, wyniki_elastic_net_val, wyniki_elastic_net_test) |>
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+wyniki_elastic_net
+
+
+breaks <- c(1000, 10000, 50000, 200000)
+labels = c("1 tys.", "10 tys.", "50 tys.", "200 tys.")
+# wartości rzeczywiste vs Przewidywane (zbiór testowy)
+ggplot(test_predictions_elastic_net, aes(x = price_gbp, 
+                                         y = predicted_price_gbp))+
+  geom_point(alpha = 0.3, color = "midnightblue")+
+  geom_abline(lty = 2, color = "red", linewidth = 1)+
+  scale_x_log10(breaks = breaks, labels = labels)+
+  scale_y_log10(breaks = breaks, labels = labels)+
+  labs(
+    title = "Regresja Liniowa (Elastic Net): Rzeczywiste vs Przewidywane Ceny",
+    subtitle = "Prezentacja na skali logarytmicznej",
+    x = "Prawdziwa cena [GBP]",
+    y = "Przewidywana cena [GBP]"
+  )+
+  theme_minimal(base_size = 8)
+```
+
+## Random Forest
+
+```{r}
+
+recipe_rf <- recipe(car_price ~ ., data = train) |>
+
+  # Ochrona przed nowymi kategoriami
+  step_novel(all_nominal_predictors(), new_level = "inne") |>
+  
+  # Ochrona przed brakami danych
+  step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+  
+  # Target encoding dla marki i modelu z kurczeniem Bayesa
+  step_lencode_mixed(make, model, outcome = vars(car_price)) |>
+  
+  # Grupowanie do kategorii "inne" dla rzadkich kategorii poniżej 0,1%
+  step_other(all_nominal_predictors(), threshold = 0.001, other = "inne") |>
+  
+  # Profilaktyczne usuwanie stałych kolumn
+  step_zv(all_predictors())
+
+
+recipe_prepped_rf <- prep(recipe_rf, training = train)
+
+train_rf <- as.data.frame(bake(recipe_prepped_rf, new_data = NULL))
+validation_rf <- as.data.frame(bake(recipe_prepped_rf, new_data = validation))
+test_rf <- as.data.frame(bake(recipe_prepped_rf, new_data = test))
+```
+
+```{r}
+
+best_params_rf <- readRDS("tuning/best_params_rf.rds")
+
+cat("Najlepsze parametry - Random Forest:\n")
+print(best_params_rf)
+
+final_rf_model <- readRDS("modele/final_rf_model.rds")
+
+preds_train_rf <- predict(final_rf_model, train_rf)$predictions |> 
+  as.vector()
+
+train_predictions_rf <- data.frame(
+  car_price = train$car_price,
+  .pred = preds_train_rf
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_rf_train <- metryki(
+  train_predictions_rf,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "Random Forest",
+         zbior = "Treningowy")
+
+preds_val_rf <- predict(final_rf_model, validation_rf)$predictions |> 
+  as.vector()
+
+val_predictions_rf <- data.frame(
+  car_price = validation$car_price,
+  .pred = preds_val_rf
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_rf_val <- metryki(
+  val_predictions_rf,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "Random Forest",
+         zbior = "Walidacyjny")
+
+preds_test_rf <- predict(final_rf_model, test_rf)$predictions |> 
+  as.vector()
+
+test_predictions_rf <- data.frame(
+  car_price = test$car_price,
+  .pred = preds_test_rf
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_rf_test <- metryki(
+  test_predictions_rf,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "Random Forest",
+         zbior = "Testowy")
+
+
+wyniki_rf <- bind_rows(wyniki_rf_train, wyniki_rf_val, wyniki_rf_test) |>
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+wyniki_rf
+
+
+# wartości rzeczywiste vs Przewidywane (zbiór testowy)
+ggplot(test_predictions_rf, aes(x = price_gbp, y = predicted_price_gbp))+
+  geom_point(alpha = 0.3, color = "midnightblue")+
+  geom_abline(lty = 2, color = "red", linewidth = 1)+
+  scale_x_log10(breaks = breaks, labels = labels)+
+  scale_y_log10(breaks = breaks, labels = labels)+
+  labs(
+    title = "Random Forest: Rzeczywiste vs Przewidywane Ceny",
+    subtitle = "Prezentacja na skali logarytmicznej",
+    x = "Prawdziwa cena [GBP]",
+    y = "Przewidywana cena [GBP]"
+  )+
+  theme_minimal(base_size = 8)
+```
+
+## XGBoost
+
+`Recipe` dla modeli boostingowych
+
+```{r}
+
+recipe_boosting <- recipe(car_price ~ ., data = train90) |>
+  
+  # Ochrona przed nowymi kategoriami
+  step_novel(all_nominal_predictors(), new_level = "inne") |>
+  
+  # Ochrona przed brakami danych
+  step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+  
+  # Usuwanie marek i modeli pojawiających się poniżej 10 razy
+  step_other(make, model, threshold = 10, other = "inne") |>
+  
+  # Usuwanie grup factorów o udziale poniżej 0.1%
+  step_other(all_nominal_predictors(), -make, -model, threshold = 0.001,
+             other = "inne") |>
+  
+  # Profilaktyczne usuwanie stałych kolumn
+  step_zv(all_predictors())
+
+
+recipe_prepped_boosting <- prep(recipe_boosting, training = train90)
+
+train_xgb_baked <- bake(recipe_prepped_boosting, new_data = NULL)
+train_es_xgb_baked <- bake(recipe_prepped_boosting, new_data = train_es)
+validation_xgb_baked <- bake(recipe_prepped_boosting, new_data = validation)
+test_xgb_baked <- bake(recipe_prepped_boosting, new_data = test)
+
+X_train_xgb <- train_xgb_baked |> 
+  dplyr::select(-car_price)
+y_train_xgb <- train_xgb_baked$car_price
+
+train_xgb <- xgb.DMatrix(
+  data = X_train_xgb,
+  label = y_train_xgb
+)
+
+X_es_xgb <- train_es_xgb_baked |> 
+  dplyr::select(-car_price)
+y_es_xgb <- train_es_xgb_baked$car_price
+
+train_es_xgb <- xgb.DMatrix(
+  data = X_es_xgb,
+  label = y_es_xgb
+)
+
+X_val_xgb <- validation_xgb_baked |> 
+  dplyr::select(-car_price)
+y_val_xgb <- validation_xgb_baked$car_price
+
+validation_xgb <- xgb.DMatrix(
+  data = X_val_xgb,
+  label = y_val_xgb
+)
+
+X_test_xgb <- test_xgb_baked |>
+  dplyr::select(-car_price)
+y_test_xgb <- test_xgb_baked$car_price
+
+test_xgb <- xgb.DMatrix(
+  data = X_test_xgb,
+  label = y_test_xgb
+)
+```
+
+```{r}
+
+best_params_xgb <- readRDS("tuning/best_params_xgb.rds")
+
+cat("Najlepsze parametry - XGBoost:\n")
+print(best_params_xgb)
+
+final_xgb <- xgb.load("modele/final_xgboost_model.ubj")
+
+best_iter_xgb <- xgb.attr(final_xgb, "best_iteration") + 1
+cat("Optymalna liczba drzew dla XGBoost: ", best_iter_xgb)
+
+preds_train_xgb <- predict(final_xgb, X_train_xgb) |> 
+  as.vector()
+
+train_predictions_xgb <- data.frame(
+  car_price = train90$car_price,
+  .pred = preds_train_xgb
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_xgb_train <- metryki(
+  train_predictions_xgb,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "XGBoost",
+         zbior = "Treningowy")
+
+preds_val_xgb <- predict(final_xgb, X_val_xgb) |> 
+  as.vector()
+
+val_predictions_xgb <- data.frame(
+  car_price = validation$car_price,
+  .pred = preds_val_xgb
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_xgb_val <- metryki(
+  val_predictions_xgb,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "XGBoost",
+         zbior = "Walidacyjny")
+
+preds_test_xgb <- predict(final_xgb, X_test_xgb) |> 
+  as.vector()
+
+test_predictions_xgb <- data.frame(
+  car_price = test$car_price,
+  .pred = preds_test_xgb
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_xgb_test <- metryki(
+  test_predictions_xgb,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "XGBoost",
+         zbior = "Testowy")
+
+
+wyniki_xgb <- bind_rows(wyniki_xgb_train, wyniki_xgb_val, wyniki_xgb_test) |>
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+wyniki_xgb
+
+
+# wartości rzeczywiste vs Przewidywane (zbiór testowy)
+real_pred <- ggplot(test_predictions_xgb, aes(x = price_gbp, y = predicted_price_gbp))+
+  geom_point(alpha = 0.3, color = "midnightblue")+
+  geom_abline(linetype = "55", color = "red", linewidth = 1)+
+  scale_x_log10(breaks = breaks, labels = labels)+
+  scale_y_log10(breaks = breaks, labels = labels)+
+  labs(
+    #title = "XGBoost: Rzeczywiste vs Przewidywane Ceny",
+    #subtitle = "Prezentacja na skali logarytmicznej",
+    x = "Prawdziwa cena [GBP]",
+    y = "Przewidywana cena [GBP]"
+  )+
+  theme_minimal(base_size = 8)+
+  theme(
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )
+real_pred
+
+ggsave(
+  filename = "template_latex/rys/real_pred.png",
+  plot = real_pred,
+  width = width_single,
+  height = height_single,
+  units = unit,
+  dpi = 1200
+)
+```
+
+## LightGBM
+
+```{r}
+
+train_lgbm_baked <- bake(recipe_prepped_boosting, new_data = NULL)
+train_es_lgbm_baked <- bake(recipe_prepped_boosting, new_data = train_es)
+validation_lgbm_baked <- bake(recipe_prepped_boosting, new_data = validation)
+test_lgbm_baked <- bake(recipe_prepped_boosting, new_data = test)
+
+zmienne_kategoryczne <- train_lgbm_baked |> 
+  dplyr::select(-car_price) |> 
+  dplyr::select(where(is.factor)) |> 
+  colnames()
+
+X_train_lgbm <- train_lgbm_baked |> 
+  dplyr::select(-car_price) |> 
+  data.matrix()
+y_train_lgbm <- train_lgbm_baked$car_price
+
+X_es_lgbm <- train_es_lgbm_baked |> 
+  dplyr::select(-car_price) |> 
+  data.matrix()
+y_es_lgbm <- train_es_lgbm_baked$car_price
+
+X_val_lgbm <- validation_lgbm_baked |> 
+  dplyr::select(-car_price) |> 
+  data.matrix()
+y_val_lgbm <- validation_lgbm_baked$car_price
+
+X_test_lgbm <- test_lgbm_baked |> 
+  dplyr::select(-car_price) |> 
+  data.matrix()
+y_test_lgbm <- test_lgbm_baked$car_price
+
+
+train_lgbm <- lgb.Dataset(
+  data = X_train_lgbm,
+  label = y_train_lgbm,
+  categorical_feature = zmienne_kategoryczne,
+  params = list(feature_pre_filter = FALSE)
+)
+
+train_es_lgbm <- lgb.Dataset(
+  data = X_es_lgbm,
+  label = y_es_lgbm,
+  reference = train_lgbm
+)
+```
+
+```{r}
+
+best_params_lgbm <- readRDS("tuning/best_params_lgbm.rds")
+
+cat("Najlepsze parametry - LightGBM:\n")
+print(best_params_lgbm)
+
+final_lgbm <- lgb.load("modele/final_lightgbm_model.txt")
+
+cat("Optymalna liczba drzew LightGBM: ", final_lgbm$num_trees())
+
+preds_train_lgbm <- predict(final_lgbm, X_train_lgbm) |> 
+  as.vector()
+
+train_predictions_lgbm <- data.frame(
+  car_price = train90$car_price,
+  .pred = preds_train_lgbm
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_lgbm_train <- metryki(
+  train_predictions_lgbm,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "LightGBM",
+         zbior = "Treningowy")
+
+preds_val_lgbm <- predict(final_lgbm, X_val_lgbm) |> 
+  as.vector()
+
+val_predictions_lgbm <- data.frame(
+  car_price = validation$car_price,
+  .pred = preds_val_lgbm
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_lgbm_val <- metryki(
+  val_predictions_lgbm,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "LightGBM",
+         zbior = "Walidacyjny")
+
+preds_test_lgbm <- predict(final_lgbm, X_test_lgbm) |> 
+  as.vector()
+
+test_predictions_lgbm <- data.frame(
+  car_price = test$car_price,
+  .pred = preds_test_lgbm
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_lgbm_test <- metryki(
+  test_predictions_lgbm,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "LightGBM",
+         zbior = "Testowy")
+
+
+wyniki_lgbm <- bind_rows(wyniki_lgbm_train, wyniki_lgbm_val, wyniki_lgbm_test) |>
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+wyniki_lgbm
+
+
+# wartości rzeczywiste vs Przewidywane (zbiór testowy)
+ggplot(test_predictions_lgbm, aes(x = price_gbp, y = predicted_price_gbp))+
+  geom_point(alpha = 0.3, color = "midnightblue")+
+  geom_abline(lty = 2, color = "red", linewidth = 1)+
+  scale_x_log10(breaks = breaks, labels = labels)+
+  scale_y_log10(breaks = breaks, labels = labels)+
+  labs(
+    title = "LightGBM: Rzeczywiste vs Przewidywane Ceny",
+    subtitle = "Prezentacja na skali logarytmicznej",
+    x = "Prawdziwa cena [GBP]",
+    y = "Przewidywana cena [GBP]"
+  )+
+  theme_minimal(base_size = 8)
+```
+
+## CatBoost
+
+```{r}
+
+train_catboost_baked <- bake(recipe_prepped_boosting, new_data = NULL)
+train_es_catboost_baked <- bake(recipe_prepped_boosting, new_data = train_es)
+validation_catboost_baked <- bake(recipe_prepped_boosting, new_data = validation)
+test_catboost_baked <- bake(recipe_prepped_boosting, new_data = test)
+
+X_train_catboost <- train_catboost_baked |> 
+  dplyr::select(-car_price)
+y_train_catboost <- train_catboost_baked$car_price
+
+train_catboost <- catboost.load_pool(
+  data = X_train_catboost,
+  label = y_train_catboost
+)
+
+X_train_es_catboost <- train_es_catboost_baked |> 
+  dplyr::select(-car_price)
+y_train_es_catboost <- train_es_catboost_baked$car_price
+
+train_es_catboost <- catboost.load_pool(
+  data = X_train_es_catboost,
+  label = y_train_es_catboost
+)
+
+X_val_catboost <- validation_catboost_baked |> 
+  dplyr::select(-car_price)
+y_val_catboost <- validation_catboost_baked$car_price
+
+validation_catboost <- catboost.load_pool(
+  data = X_val_catboost,
+  label = y_val_catboost
+)
+
+X_test_catboost <- test_catboost_baked |> 
+  dplyr::select(-car_price)
+y_test_catboost <- test_catboost_baked$car_price
+
+test_catboost <- catboost.load_pool(
+  data = X_test_catboost,
+  label = y_test_catboost
+)
+```
+
+```{r}
+
+best_params_catboost <- readRDS("tuning/best_params_catboost.rds")
+
+cat("Najlepsze parametry - CatBoost:\n")
+print(best_params_catboost)
+
+final_catboost <- catboost.load_model("modele/final_catboost_model.cbm")
+
+cat("Optymalna liczba drzew dla CatBoost: ", final_catboost$tree_count)
+
+preds_train_catboost <- catboost.predict(
+  model = final_catboost,
+  pool = train_catboost
+) |> 
+  as.vector()
+
+train_predictions_catboost <- data.frame(
+  car_price = train90$car_price,
+  .pred = preds_train_catboost
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_catboost_train <- metryki(
+  train_predictions_catboost,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "CatBoost",
+         zbior = "Treningowy")
+
+preds_val_catboost <- catboost.predict(
+  model = final_catboost,
+  pool = validation_catboost
+) |> 
+  as.vector()
+
+val_predictions_catboost <- data.frame(
+  car_price = validation$car_price,
+  .pred = preds_val_catboost
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_catboost_val <- metryki(
+  val_predictions_catboost,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "CatBoost",
+         zbior = "Walidacyjny")
+
+preds_test_catboost <- catboost.predict(
+  model = final_catboost,
+  pool = test_catboost
+) |> 
+  as.vector()
+
+test_predictions_catboost <- data.frame(
+  car_price = test$car_price,
+  .pred = preds_test_catboost
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_catboost_test <- metryki(
+  test_predictions_catboost,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "CatBoost",
+         zbior = "Testowy")
+
+
+wyniki_catboost <- bind_rows(wyniki_catboost_train, wyniki_catboost_val, wyniki_catboost_test) |>
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+wyniki_catboost
+
+
+# wartości rzeczywiste vs Przewidywane (zbiór testowy)
+ggplot(test_predictions_catboost, aes(x = price_gbp, y = predicted_price_gbp))+
+  geom_point(alpha = 0.3, color = "midnightblue")+
+  geom_abline(lty = 2, color = "red", linewidth = 1)+
+  scale_x_log10(breaks = breaks, labels = labels)+
+  scale_y_log10(breaks = breaks, labels = labels)+
+  labs(
+    title = "CatBoost: Rzeczywiste vs Przewidywane Ceny",
+    subtitle = "Prezentacja na skali logarytmicznej",
+    x = "Prawdziwa cena [GBP]",
+    y = "Przewidywana cena [GBP]"
+  )+
+  theme_minimal(base_size = 8)
+```
+
+## Sieć neuronowa MLP
+
+```{r}
+
+recipe_mlp <- recipe(car_price ~ ., data = train90) |>
+  
+  # Ochrona przed nowymi kategoriami
+  step_novel(all_nominal_predictors(), new_level = "inne") |>
+  
+  # Ochrona przed brakami danych
+  step_unknown(all_nominal_predictors(), new_level = "nieznane") |>
+  
+  # Target encoding dla marki i modelu z kurczeniem Bayesa
+  step_lencode_mixed(make, model, outcome = vars(car_price)) |>
+  
+  # Grupowanie do kategorii "inne" dla rzadkich kategorii poniżej 0,1%
+  step_other(all_nominal_predictors(), threshold = 0.001, other = "inne") |>
+  
+  # Zamiana pozostałych zmiennych kategorycznych na zmienne binarne
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) |>
+  
+  # Profilaktyczne usuwanie stałych kolumn
+  step_zv(all_predictors()) |> 
+  
+  # Normalizacja predyktorów numerycznych
+  step_normalize(all_numeric_predictors())
+
+recipe_prepped_mlp <- prep(recipe_mlp, training = train90)
+
+train_mlp <- bake(recipe_prepped_mlp, new_data = NULL)
+train_es_mlp <- bake(recipe_prepped_mlp, new_data = train_es)
+val_mlp <- bake(recipe_prepped_mlp, new_data = validation)
+test_mlp <- bake(recipe_prepped_mlp, new_data = test)
+
+X_train_mlp <- train_mlp |> 
+  dplyr::select(-car_price) |> 
+  as.matrix()
+y_train_mlp <- train_mlp$car_price
+
+X_train_es_mlp <- train_es_mlp |> 
+  dplyr::select(-car_price) |> 
+  as.matrix()
+y_train_es_mlp <- train_es_mlp$car_price
+
+X_val_mlp <- val_mlp |> 
+  dplyr::select(-car_price) |> 
+  as.matrix()
+y_val_mlp <- val_mlp$car_price
+
+X_test_mlp <- test_mlp |> 
+  dplyr::select(-car_price) |> 
+  as.matrix()
+y_test_mlp <- test_mlp$car_price
+```
+
+```{r}
+
+best_params_mlp <- readRDS("tuning/best_params_mlp.rds")
+
+cat("Najlepsze parametry - MLP:\n")
+print(best_params_mlp)
+
+model_mlp <- keras3::load_model("modele/model_mlp.keras")
+
+preds_train_mlp <- predict(model_mlp, X_train_mlp, verbose = 0) |> 
+  as.vector()
+
+train_predictions_mlp <- data.frame(
+  car_price = y_train_mlp,
+  .pred = preds_train_mlp
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_mlp_train <- metryki(
+  train_predictions_mlp,
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "MLP",
+         zbior = "Treningowy")
+
+preds_val_mlp <- predict(model_mlp, X_val_mlp, verbose = 0) |> 
+  as.vector()
+
+val_predictions_mlp <- data.frame(
+  car_price = y_val_mlp,
+  .pred = preds_val_mlp
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_mlp_val <- metryki(
+  val_predictions_mlp, 
+  truth = price_gbp, 
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "MLP", 
+         zbior = "Walidacyjny")
+
+preds_test_mlp <- predict(model_mlp, X_test_mlp, verbose = 0) |> 
+  as.vector()
+
+test_predictions_mlp <- data.frame(
+  car_price = y_test_mlp,
+  .pred = preds_test_mlp
+) |>
+  mutate(
+    price_gbp = exp(car_price),
+    predicted_price_gbp = exp(.pred)
+  )
+
+wyniki_mlp_test <- metryki(
+  test_predictions_mlp, 
+  truth = price_gbp, 
+  estimate = predicted_price_gbp
+) |>
+  mutate(model = "MLP", 
+         zbior = "Testowy")
+
+wyniki_mlp <- bind_rows(wyniki_mlp_train, wyniki_mlp_val, wyniki_mlp_test) |>
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+wyniki_mlp
+
+
+# wartości rzeczywiste vs Przewidywane (zbiór testowy)
+ggplot(test_predictions_mlp, aes(x = price_gbp, y = predicted_price_gbp))+
+  geom_point(alpha = 0.3, color = "midnightblue")+
+  geom_abline(lty = 2, color = "red", linewidth = 1)+
+  scale_x_log10(breaks = breaks, labels = labels)+
+  scale_y_log10(breaks = breaks, labels = labels)+
+  labs(
+    title = "MLP: Rzeczywiste vs Przewidywane Ceny",
+    subtitle = "Prezentacja na skali logarytmicznej",
+    x = "Prawdziwa cena [GBP]",
+    y = "Przewidywana cena [GBP]"
+  )+
+  theme_minimal(base_size = 8)
+```
+
+## Wyniki
+
+```{r}
+
+wyniki <- bind_rows(wyniki_elastic_net_test,
+                    wyniki_rf_test,
+                    wyniki_xgb_test,
+                    wyniki_lgbm_test,
+                    wyniki_catboost_test,
+                    wyniki_mlp_test) |> 
+  dplyr::select(model, zbior, .metric, .estimate) |>
+  tidyr::pivot_wider(names_from = .metric, values_from = .estimate)
+
+print(wyniki)
+```
+
+## Czasy
+
+```{r}
+
+sekundy_tuning_elastic_net <- readRDS("czasy/sekundy_tuning_elastic_net.rds")
+sekundy_fit_elastic_net <- readRDS("czasy/sekundy_fit_elastic_net.rds")
+
+sekundy_tuning_rf <- readRDS("czasy/sekundy_tuning_rf.rds")
+sekundy_fit_rf <- readRDS("czasy/sekundy_tuning_rf.rds")
+
+sekundy_tuning_xgb <- readRDS("czasy/sekundy_tuning_xgb.rds")
+sekundy_fit_xgb <- readRDS("czasy/sekundy_fit_xgb.rds")
+
+sekundy_tuning_lgbm <- readRDS("czasy/sekundy_tuning_lgbm.rds")
+sekundy_fit_lgbm <- readRDS("czasy/sekundy_fit_lgbm.rds")
+
+sekundy_tuning_catboost <- readRDS("czasy/sekundy_tuning_catboost.rds")
+sekundy_fit_catboost <- readRDS("czasy/sekundy_fit_catboost.rds")
+
+sekundy_tuning_mlp <- readRDS("czasy/sekundy_tuning_mlp.rds")
+sekundy_fit_mlp <- readRDS("czasy/sekundy_fit_mlp.rds")
+```
+
+Tabela do wizualizacji łącznych czasów i wyników metryk modeli
+
+```{r}
+
+tabela <- data.frame(
+  model = c(
+    "Regresja liniowa (Elastic Net)",
+    "Random Forest",
+    "XGBoost",
+    "LightGBM",
+    "CatBoost",
+    "MLP"
+  ),
+  czas_tuning_sekundy = c(
+    sekundy_tuning_elastic_net,
+    sekundy_tuning_rf,
+    sekundy_tuning_xgb,
+    sekundy_tuning_lgbm,
+    sekundy_tuning_catboost,
+    sekundy_tuning_mlp
+  ),
+  czas_trening_sekundy = c(
+    sekundy_fit_elastic_net,
+    sekundy_fit_rf,
+    sekundy_fit_xgb,
+    sekundy_fit_lgbm,
+    sekundy_fit_catboost,
+    sekundy_fit_mlp
+  ),
+  mape = c(
+    wyniki_elastic_net$mape[3],
+    wyniki_rf$mape[3],
+    wyniki_xgb$mape[3],
+    wyniki_lgbm$mape[3],
+    wyniki_catboost$mape[3],
+    wyniki_mlp$mape[3]
+  )
+) |> 
+  mutate(
+    laczny_czas_minuty = (czas_tuning_sekundy + czas_trening_sekundy)/60
+  )
+```
+
+Wizualizacja: Błąd MAPE a łączny czas tuningu
+
+```{r}
+
+czasy <- ggplot(tabela, aes(x = laczny_czas_minuty, y = mape))+
+  geom_point(aes(color = model), size = 5)+
+  scale_x_log10(
+    breaks = c(1, 30, 60, 120, 240, 360, 540),
+    labels = c("1 min", "30 min", "1 h", "2 h", "4 h", "6h", "9 h")
+  )+
+  geom_text_repel(
+    aes(label = model),
+    fontface = "bold",
+    direction = "both", # przysuwanie etykiet
+    nudge_y = 0.6, # początkowe przesunięcie etykiet w górę
+    box.padding = 0.5, # dodatkowa przestrzeń wokół tekstów
+    size = 3, # wielkość etykiet
+    point.padding = 0.4, # odsunięcie tekstu od punktu
+    max.overlaps = Inf, # widoczność wszystkich etykiet
+    min.segment.length = Inf, # brak linii wskazujących do etykiet
+    seed = 2027
+  )+
+  scale_color_manual(
+    values = c(
+      "Regresja liniowa (Elastic Net)" = "#8806d4",
+      "Random Forest" = "#008521",
+      "XGBoost" = "#0068c7",
+      "LightGBM" = "#f7820c",
+      "CatBoost" = "#cf0295",
+      "MLP" = "#d90707"
+    )
+  )+
+  theme_minimal(base_size = 8)+
+  theme(legend.position = "none",
+        axis.title = element_text(size = 8),
+        axis.text = element_text(size = 7)
+        )+
+  labs(
+    x = "Łączny czas tuningu i treningu",
+    y = "Błąd MAPE na zbiorze testowym [%]"
+  )
+czasy
+
+ggsave(
+  filename = "template_latex/rys/czasy.pdf",
+  plot = czasy,
+  width = width_single,
+  height = height_single,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+## Błędy modeli
+
+Podział na 3 kategorie cenowe wg kwartylu rozkładu ceny pojazdów
+
+- Cena niska: **0 - 25 %**
+
+- Cena średnia: **25 % – 75 %**
+
+- Cena wysoka: **75 % – 100 %**
+
+```{r}
+
+test_gbp <- test |> 
+  mutate(price_gbp = exp(car_price))
+
+kwartyl1 <- quantile(test_gbp$price_gbp, probs = 0.25) # 1 kwartyl
+kwartyl3 <- quantile(test_gbp$price_gbp, probs = 0.75) # 3 kwartyl
+```
+
+### Elastic Net
+
+```{r}
+
+test_predictions_elastic_net <- test_predictions_elastic_net |>
+  mutate(
+    price_group = case_when(
+      price_gbp <= kwartyl1 ~ "low",
+      price_gbp < kwartyl3 ~ "medium",
+      TRUE ~ "high"
+    )
+  )
+
+wyniki_price_groups_elastic_net_low <- metryki(
+  test_predictions_elastic_net |> 
+    dplyr::filter(price_group == "low"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "low")
+
+wyniki_price_groups_elastic_net_medium <- metryki(
+  test_predictions_elastic_net |> 
+    dplyr::filter(price_group == "medium"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "medium")
+
+wyniki_price_groups_elastic_net_high <- metryki(
+  test_predictions_elastic_net |> 
+    dplyr::filter(price_group == "high"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "high")
+
+bledy_elastic_net <- rbind(wyniki_price_groups_elastic_net_low,
+                           wyniki_price_groups_elastic_net_medium,
+                           wyniki_price_groups_elastic_net_high)
+
+bledy_elastic_net <- bledy_elastic_net |> 
+  mutate(.estimate = case_when(
+    .metric == "rsq" ~ round(.estimate, 3),
+    .metric == "mape" ~ round(.estimate, 2),
+    .metric %in% c("mae", "rmse") ~ round(.estimate),
+    TRUE ~ .estimate # inne przypadki metryk
+  ))
+
+bledy_elastic_net <- bledy_elastic_net |> 
+  pivot_wider(
+    names_from = .metric,
+    values_from = .estimate
+  )
+```
+
+### Random Forest
+
+```{r}
+
+test_predictions_rf <- test_predictions_rf |>
+  mutate(
+    price_group = case_when(
+      price_gbp <= kwartyl1 ~ "low",
+      price_gbp < kwartyl3 ~ "medium",
+      TRUE ~ "high"
+    )
+  )
+
+wyniki_price_groups_rf_low <- metryki(
+  test_predictions_rf |> 
+    dplyr::filter(price_group == "low"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "low")
+
+wyniki_price_groups_rf_medium <- metryki(
+  test_predictions_rf |> 
+    dplyr::filter(price_group == "medium"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "medium")
+
+wyniki_price_groups_rf_high <- metryki(
+  test_predictions_rf |> 
+    dplyr::filter(price_group == "high"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "high")
+
+bledy_rf <- rbind(wyniki_price_groups_rf_low,
+                           wyniki_price_groups_rf_medium,
+                           wyniki_price_groups_rf_high)
+
+bledy_rf <- bledy_rf |> 
+  mutate(.estimate = case_when(
+    .metric == "rsq" ~ round(.estimate, 3),
+    .metric == "mape" ~ round(.estimate, 2),
+    .metric %in% c("mae", "rmse") ~ round(.estimate),
+    TRUE ~ .estimate # inne przypadki metryk
+  ))
+
+bledy_rf <- bledy_rf |> 
+  pivot_wider(
+    names_from = .metric,
+    values_from = .estimate
+  )
+```
+
+### XGBoost
+
+```{r}
+
+test_predictions_xgb <- test_predictions_xgb |>
+  mutate(
+    price_group = case_when(
+      price_gbp <= kwartyl1 ~ "low",
+      price_gbp < kwartyl3 ~ "medium",
+      TRUE ~ "high"
+    )
+  )
+
+wyniki_price_groups_xgb_low <- metryki(
+  test_predictions_xgb |> 
+    dplyr::filter(price_group == "low"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "low")
+
+wyniki_price_groups_xgb_medium <- metryki(
+  test_predictions_xgb |> 
+    dplyr::filter(price_group == "medium"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "medium")
+
+wyniki_price_groups_xgb_high <- metryki(
+  test_predictions_xgb |> 
+    dplyr::filter(price_group == "high"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "high")
+
+bledy_xgb <- rbind(wyniki_price_groups_xgb_low,
+                  wyniki_price_groups_xgb_medium,
+                  wyniki_price_groups_xgb_high)
+
+bledy_xgb <- bledy_xgb |> 
+  mutate(.estimate = case_when(
+    .metric == "rsq" ~ round(.estimate, 3),
+    .metric == "mape" ~ round(.estimate, 2),
+    .metric %in% c("mae", "rmse") ~ round(.estimate),
+    TRUE ~ .estimate # inne przypadki metryk
+  ))
+
+bledy_xgb <- bledy_xgb |> 
+  pivot_wider(
+    names_from = .metric,
+    values_from = .estimate
+  )
+```
+
+### LightGBM
+
+```{r}
+
+test_predictions_lgbm <- test_predictions_lgbm |>
+  mutate(
+    price_group = case_when(
+      price_gbp <= kwartyl1 ~ "low",
+      price_gbp < kwartyl3 ~ "medium",
+      TRUE ~ "high"
+    )
+  )
+
+wyniki_price_groups_lgbm_low <- metryki(
+  test_predictions_lgbm |> 
+    dplyr::filter(price_group == "low"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "low")
+
+wyniki_price_groups_lgbm_medium <- metryki(
+  test_predictions_lgbm |> 
+    dplyr::filter(price_group == "medium"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "medium")
+
+wyniki_price_groups_lgbm_high <- metryki(
+  test_predictions_lgbm |> 
+    dplyr::filter(price_group == "high"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "high")
+
+bledy_lgbm <- rbind(wyniki_price_groups_lgbm_low,
+                   wyniki_price_groups_lgbm_medium,
+                   wyniki_price_groups_lgbm_high)
+
+bledy_lgbm <- bledy_lgbm |> 
+  mutate(.estimate = case_when(
+    .metric == "rsq" ~ round(.estimate, 3),
+    .metric == "mape" ~ round(.estimate, 2),
+    .metric %in% c("mae", "rmse") ~ round(.estimate),
+    TRUE ~ .estimate # inne przypadki metryk
+  ))
+
+bledy_lgbm <- bledy_lgbm |> 
+  pivot_wider(
+    names_from = .metric,
+    values_from = .estimate
+  )
+```
+
+### CatBoost
+
+```{r}
+
+test_predictions_catboost <- test_predictions_catboost |>
+  mutate(
+    price_group = case_when(
+      price_gbp <= kwartyl1 ~ "low",
+      price_gbp < kwartyl3 ~ "medium",
+      TRUE ~ "high"
+    )
+  )
+
+wyniki_price_groups_catboost_low <- metryki(
+  test_predictions_catboost |> 
+    dplyr::filter(price_group == "low"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "low")
+
+wyniki_price_groups_catboost_medium <- metryki(
+  test_predictions_catboost |> 
+    dplyr::filter(price_group == "medium"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "medium")
+
+wyniki_price_groups_catboost_high <- metryki(
+  test_predictions_catboost |> 
+    dplyr::filter(price_group == "high"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "high")
+
+bledy_catboost <- rbind(wyniki_price_groups_catboost_low,
+                    wyniki_price_groups_catboost_medium,
+                    wyniki_price_groups_catboost_high)
+
+bledy_catboost <- bledy_catboost |> 
+  mutate(.estimate = case_when(
+    .metric == "rsq" ~ round(.estimate, 3),
+    .metric == "mape" ~ round(.estimate, 2),
+    .metric %in% c("mae", "rmse") ~ round(.estimate),
+    TRUE ~ .estimate # inne przypadki metryk
+  ))
+
+bledy_catboost <- bledy_catboost |> 
+  pivot_wider(
+    names_from = .metric,
+    values_from = .estimate
+  )
+```
+
+### MLP
+
+```{r}
+
+test_predictions_mlp <- test_predictions_mlp |>
+  mutate(
+    price_group = case_when(
+      price_gbp <= kwartyl1 ~ "low",
+      price_gbp < kwartyl3 ~ "medium",
+      TRUE ~ "high"
+    )
+  )
+
+wyniki_price_groups_mlp_low <- metryki(
+  test_predictions_mlp |> 
+    dplyr::filter(price_group == "low"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "low")
+
+wyniki_price_groups_mlp_medium <- metryki(
+  test_predictions_mlp |> 
+    dplyr::filter(price_group == "medium"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "medium")
+
+wyniki_price_groups_mlp_high <- metryki(
+  test_predictions_mlp |> 
+    dplyr::filter(price_group == "high"),
+  truth = price_gbp,
+  estimate = predicted_price_gbp
+) |> 
+  mutate(price_group = "high")
+
+bledy_mlp <- rbind(wyniki_price_groups_mlp_low,
+                        wyniki_price_groups_mlp_medium,
+                        wyniki_price_groups_mlp_high)
+
+bledy_mlp <- bledy_mlp |> 
+  mutate(.estimate = case_when(
+    .metric == "rsq" ~ round(.estimate, 3),
+    .metric == "mape" ~ round(.estimate, 2),
+    .metric %in% c("mae", "rmse") ~ round(.estimate),
+    TRUE ~ .estimate # inne przypadki metryk
+  ))
+
+bledy_mlp <- bledy_mlp |> 
+  pivot_wider(
+    names_from = .metric,
+    values_from = .estimate
+  )
+```
+
+## Lokalne błędy
+
+```{r}
+
+test_id <- test |> select(-car_price) %>% 
+  mutate(id = row_number())
+
+test_predictions_xgb_id <- test_predictions_xgb %>% 
+  mutate(id = row_number())
+
+full_test_xgb <- test_id %>%
+  left_join(test_predictions_xgb_id, by = "id") |> 
+  select(-id)
+```
+
+Największy i najmniejszy błąd w grupie tanich samochodów (średnio najgorsze wyniki metryk)
+
+```{r}
+
+full_bledy_xgb <- full_test_xgb |> 
+  mutate(
+    blad_bezwzgledny = abs(price_gbp - predicted_price_gbp),
+    blad_procentowy = (blad_bezwzgledny / price_gbp) * 100
+  )
+
+id_low <- which(full_bledy_xgb$price_group == "low")
+
+best_pred_low <- id_low[which.min(full_bledy_xgb$blad_procentowy[id_low])]
+
+worst_pred_low <- id_low[which.max(full_bledy_xgb$blad_procentowy[id_low])]
+```
+
+## Wyjaśnialność modeli
+
+```{r}
+
+X_test <- test |> 
+  dplyr::select(-car_price)
+
+Y_test_GBP <- exp(test$car_price)
+
+set.seed(2027)
+
+train_sample_3k <- train90 |> 
+  dplyr::select(-car_price) |> 
+  sample_n(3000)
+
+saveRDS(train_sample_3k, "dane/train_sample_3k.rds")
+```
+
+**Explainery:**
+
+- Regresja liniowa (Elastic Net)
+
+```{r}
+
+explainer_elastic_net <- DALEX::explain(
+  model = final_elastic_net_model, # to workflow (bez dodawania tu recipe)
+  data = X_test,
+  y = Y_test_GBP,
+  predict_function = function(model, data)
+  {
+    preds <- predict(model, data)$.pred
+    return(exp(preds))
+  },
+  label = "Elastic Net"
+)
+```
+
+- Random Forest
+
+```{r}
+
+explainer_rf <- DALEX::explain(
+  model = final_rf_model,
+  data = X_test,
+  y = Y_test_GBP,
+  predict_function = function(model, data)
+  {
+    data_baked <- as.data.frame(bake(recipe_prepped_rf, data))
+    
+    preds <- predict(model, data_baked)$predictions
+    return(exp(preds))
+  },
+  label = "Random Forest"
+)
+```
+
+- XGBoost
+
+```{r}
+
+explainer_xgboost <- DALEX::explain(
+  model = final_xgb,
+  data = X_test,
+  y = Y_test_GBP,
+  predict_function = function(model, data)
+  {
+    data_baked <- bake(recipe_prepped_boosting, data)
+    dmat <- xgb.DMatrix(
+      data = data_baked
+    )
+    
+    preds <- predict(model, newdata = dmat)
+    return(exp(preds))
+  },
+  label = "XGBoost"
+)
+
+saveRDS(explainer_xgboost, "dane/explainer_xgboost.rds")
+```
+
+- LightGBM
+
+```{r}
+
+explainer_lightgbm <- DALEX::explain(
+  model = final_lgbm,
+  data = X_test,
+  y = Y_test_GBP,
+  predict_function = function(model, data)
+  {
+    data_baked <- bake(recipe_prepped_boosting, data) |> 
+      data.matrix()
+    
+    preds <- predict(model, newdata = data_baked)
+    return(as.vector(exp(preds)))
+  },
+  label = "LightGBM"
+)
+```
+
+- CatBoost
+
+```{r}
+
+explainer_catboost <- DALEX::explain(
+  model = final_catboost,
+  data = X_test,
+  y = Y_test_GBP,
+  predict_function = function(model, data)
+  {
+    data_baked <- bake(recipe_prepped_boosting, data)
+    data_pool <- catboost.load_pool(
+      data = data_baked
+    )
+        
+    preds <- catboost.predict(
+      model = model,
+      pool = data_pool
+    ) |> 
+      as.vector()
+    return(exp(preds))
+  },
+  label = "CatBoost"
+)
+```
+
+- MLP
+
+```{r}
+
+explainer_mlp <- DALEX::explain(
+  model = model_mlp,
+  data = X_test,
+  y = Y_test_GBP,
+  predict_function = function(model, data)
+  {
+    data_baked <- bake(recipe_prepped_mlp, data)
+    mat <- as.matrix(data_baked)
+    
+    preds <- predict(model, mat, verbose = 0) |> 
+      as.vector()
+    return(exp(preds))
+  },
+  label = "MLP"
+)
+```
+
+### Wykresy ALE (Accumulated Local Effects)
+
+`miles` (przebieg)
+
+```{r, message=FALSE}
+
+set.seed(2027)
+
+ale_elastic_net_miles <- model_profile(
+  explainer = explainer_elastic_net,
+  variables = "miles",
+  type = "accumulated",
+  N = NULL
+)
+
+set.seed(2027)
+
+ale_rf_miles <- model_profile(
+  explainer = explainer_rf,
+  variables = "miles",
+  type = "accumulated",
+  N = NULL
+)
+
+set.seed(2027)
+
+ale_xgboost_miles <- model_profile(
+  explainer = explainer_xgboost,
+  variables = "miles",
+  type = "accumulated",
+  N = NULL
+)
+
+set.seed(2027)
+
+ale_mlp_miles <- model_profile(
+  explainer = explainer_mlp, 
+  variables = "miles",
+  type = "accumulated",
+  N = NULL
+)
+
+tys <- function(x)
+{
+  ifelse(!is.na(x) & x >= 10000,
+         paste0(x / 1000, " tys."),
+         as.character(x))
+}
+
+ale_miles <- plot(ale_elastic_net_miles, ale_rf_miles, ale_xgboost_miles,
+                  ale_mlp_miles, size = 0.5)+
+  aes(linetype = `_label_`)+
+  scale_x_continuous(labels = tys)+
+  scale_y_continuous(limits = c(7500, 35000), labels = tys)+
+  scale_color_manual(values = c("Elastic Net" = "#8806d4",
+                                "Random Forest" = "#008521",
+                                "XGBoost" = "#0068c7",
+                                "MLP" = "#d90707"))+
+  scale_linetype_manual(values = c("Elastic Net" = "dashed",
+                                   "Random Forest" = "twodash",
+                                   "XGBoost" = "solid",
+                                   "MLP" = "dotdash"))+
+  theme_minimal(base_size = 8)+
+  theme(
+    plot.title = element_blank(),
+    plot.subtitle = element_blank(),
+    strip.text = element_blank(),
+    strip.background = element_blank(),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7),
+    legend.position = "none"
+  )+
+  labs(y = "Średnia prognozowana cena [GBP]",
+       x = "Przebieg [mi]")
+ale_miles
+
+ggsave(
+  filename = "template_latex/rys/ale_miles.pdf",
+  plot = ale_miles,
+  width = width_2,
+  height = height_2,
+  units = unit,
+  device = cairo_pdf
+)
+
+gc()
+```
+
+`year` (rok produkcji)
+
+```{r}
+
+set.seed(2027)
+
+ale_elastic_net_year <- model_profile(
+  explainer = explainer_elastic_net,
+  variables = "year",
+  type = "accumulated",
+  N = NULL
+)
+
+set.seed(2027)
+
+ale_rf_year <- model_profile(
+  explainer = explainer_rf,
+  variables = "year",
+  type = "accumulated",
+  N = NULL
+)
+
+set.seed(2027)
+
+ale_xgboost_year <- model_profile(
+  explainer = explainer_xgboost,
+  variables = "year",
+  type = "accumulated",
+  N = NULL
+)
+
+set.seed(2027)
+
+ale_mlp_year <- model_profile(
+  explainer = explainer_mlp, 
+  variables = "year",
+  type = "accumulated",
+  N = NULL
+)
+
+ale_year <- plot(ale_elastic_net_year, ale_rf_year, ale_xgboost_year,
+                  ale_mlp_year, size = 0.5)+
+  aes(linetype = `_label_`)+
+  scale_x_continuous(labels = tys)+
+  scale_y_continuous(limits = c(7500, 35000), labels = tys)+
+  scale_color_manual(values = c("Elastic Net" = "#8806d4",
+                                "Random Forest" = "#008521",
+                                "XGBoost" = "#0068c7",
+                                "MLP" = "#d90707"))+
+  scale_linetype_manual(values = c("Elastic Net" = "dashed",
+                                   "Random Forest" = "twodash",
+                                   "XGBoost" = "solid",
+                                   "MLP" = "dotdash"))+
+  theme_minimal(base_size = 8)+
+  theme(
+    plot.title = element_blank(),
+    plot.subtitle = element_blank(),
+    strip.text = element_blank(),
+    strip.background = element_blank(),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7),
+    legend.position = "none"
+  )+
+  labs(y = "Średnia prognozowana cena [GBP]",
+       x = "Rok produkcji")
+ale_year
+
+ggsave(
+  filename = "template_latex/rys/ale_year.pdf",
+  plot = ale_year,
+  width = width_2,
+  height = height_2,
+  units = unit,
+  device = cairo_pdf
+)
+
+gc()
+```
+
+`engine_kW` (moc silnika)
+
+```{r, message=FALSE}
+
+set.seed(2027)
+
+ale_elastic_net_engine_kW <- model_profile(
+  explainer = explainer_elastic_net,
+  variables = "engine_kW",
+  type = "accumulated",
+  N = NULL
+)
+
+set.seed(2027)
+
+ale_rf_engine_kW <- model_profile(
+  explainer = explainer_rf,
+  variables = "engine_kW",
+  type = "accumulated",
+  N = NULL
+)
+
+set.seed(2027)
+
+ale_xgboost_engine_kW <- model_profile(
+  explainer = explainer_xgboost,
+  variables = "engine_kW",
+  type = "accumulated",
+  N = NULL
+)
+
+set.seed(2027)
+
+ale_mlp_engine_kW <- model_profile(
+  explainer = explainer_mlp, 
+  variables = "engine_kW",
+  type = "accumulated",
+  N = NULL
+)
+
+ale_engine_kW <- plot(ale_elastic_net_engine_kW, ale_rf_engine_kW, 
+                      ale_xgboost_engine_kW, ale_mlp_engine_kW, size = 0.5)+
+  aes(linetype = `_label_`)+
+  scale_x_continuous(labels = tys)+
+  scale_y_continuous(limits = c(10000, 80000), labels = tys)+
+  scale_color_manual(values = c("Elastic Net" = "#8806d4",
+                                "Random Forest" = "#008521",
+                                "XGBoost" = "#0068c7",
+                                "MLP" = "#d90707"))+
+  scale_linetype_manual(values = c("Elastic Net" = "dashed",
+                                   "Random Forest" = "twodash",
+                                   "XGBoost" = "solid",
+                                   "MLP" = "dotdash"))+
+  theme_minimal(base_size = 8)+
+  theme(
+    plot.title = element_blank(),
+    plot.subtitle = element_blank(),
+    strip.text = element_blank(),
+    strip.background = element_blank(),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7),
+    legend.position = "none"
+  )+
+  labs(
+    y = "Średnia prognozowana cena [GBP]",
+    x = "Moc silnika [kW]")
+ale_engine_kW
+
+ggsave(
+  filename = "template_latex/rys/ale_engine_kW.pdf",
+  plot = ale_engine_kW,
+  width = width_2,
+  height = height_2,
+  units = unit,
+  device = cairo_pdf
+)
+
+gc()
+```
+
+`engine_vol` (pojemność silnika)
+
+```{r}
+
+set.seed(2027)
+
+ale_elastic_net_engine_vol <- model_profile(
+  explainer = explainer_elastic_net,
+  variables = "engine_vol",
+  type = "accumulated",
+  N = NULL
+)
+
+set.seed(2027)
+
+ale_rf_engine_vol <- model_profile(
+  explainer = explainer_rf,
+  variables = "engine_vol",
+  type = "accumulated",
+  N = NULL
+)
+
+set.seed(2027)
+
+ale_xgboost_engine_vol <- model_profile(
+  explainer = explainer_xgboost,
+  variables = "engine_vol",
+  type = "accumulated",
+  N = NULL
+)
+
+set.seed(2027)
+
+ale_mlp_engine_vol <- model_profile(
+  explainer = explainer_mlp, 
+  variables = "engine_vol",
+  type = "accumulated",
+  N = NULL
+)
+
+ale_engine_vol <- plot(ale_elastic_net_engine_vol, ale_rf_engine_vol, 
+                       ale_xgboost_engine_vol, ale_mlp_engine_vol, size = 0.5)+
+  aes(linetype = `_label_`)+
+  scale_x_continuous(labels = tys)+
+  scale_y_continuous(limits = c(10000, 80000), labels = tys)+
+  scale_color_manual(values = c("Elastic Net" = "#8806d4",
+                                "Random Forest" = "#008521",
+                                "XGBoost" = "#0068c7",
+                                "MLP" = "#d90707"))+
+  scale_linetype_manual(values = c("Elastic Net" = "dashed",
+                                   "Random Forest" = "twodash",
+                                   "XGBoost" = "solid",
+                                   "MLP" = "dotdash"))+
+  theme_minimal(base_size = 8)+
+  theme(
+    plot.title = element_blank(),
+    plot.subtitle = element_blank(),
+    strip.text = element_blank(),
+    strip.background = element_blank(),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7),
+    legend.position = "none"
+  )+
+  labs(
+    y = "Średnia prognozowana cena [GBP]",
+    x = "Pojemność silnika [l]")
+ale_engine_vol
+
+ggsave(
+  filename = "template_latex/rys/ale_engine_vol.pdf",
+  plot = ale_engine_vol,
+  width = width_2,
+  height = height_2,
+  units = unit,
+  device = cairo_pdf
+)
+
+gc()
+```
+
+Wspólna legenda
+
+```{r}
+
+library(cowplot) # do wyciągnięcia legendy
+
+p_temp <- ale_miles +
+  theme_minimal(base_size = 8)+
+  theme(
+    legend.position = "bottom",
+    legend.box.margin = margin(0, 0, 0, 0),
+    legend.margin = margin(0, 0, 0, 0),
+    plot.margin = margin(0, 0, 0, 0),
+    legend.title = element_text(size = 8),
+    legend.text = element_text(size = 7),
+    legend.key.width = unit(1.3, unit) # długość linii w legendzie
+  )+
+  labs(
+    color = "Model:", 
+    linetype = "Model:"
+  )+
+  guides(
+    color = guide_legend(override.aes = list(linewidth = 1.0)) # grubość linii w legendzie
+  )
+
+shared_legend <- get_legend(p_temp)
+
+# zapis legendy
+cairo_pdf(
+  filename = "template_latex/rys/ale_legend.pdf", 
+  width = 2*width_2 / 2.54,
+  height = 0.9 / 2.54
+)
+grid::grid.draw(shared_legend)
+dev.off()
+```
+
+Zakrzywiona linia dla regresji liniowej pojawiła się przez logarytmowanie ceny pojazdu
+
+### Istotność zmiennych w modelu XGBoost (Variable Importance)
+
+Metoda permutacyjna
+
+```{r, message=FALSE}
+
+set.seed(2027)
+
+vi_xgboost <- model_parts(
+  explainer = explainer_xgboost,
+  loss_function = yardstick::mape_vec, # funkcja straty jako MAPE
+  N = NULL, # cały zbiór testowy
+  B = 10 # 10 powtórzeń permutacji
+  )
+
+vi <- plot(vi_xgboost, max_vars = 15, bar_width = 5.5)
+
+vi$layers[[3]] <- NULL # brak zbędnych niebieskich obiektów (całe dane test)
+vi$layers[[1]]$aes_params$linewidth <- 0 # usunięcie kropek po lewej
+
+vi <- vi + 
+  scale_color_manual(values = "#ba0b0b")+
+  theme_minimal(base_size = 8)+
+  theme(
+    plot.title = element_blank(),
+    plot.subtitle = element_blank(),
+    strip.text = element_blank(),
+    strip.background = element_blank(),
+    axis.text = element_text(size = 7),
+    axis.title = element_text(size = 8),
+    axis.text.y = element_text(color = "black", size = 8),
+    panel.grid.major.y = element_blank(),
+    legend.position = "none"
+  )+
+  labs(
+    x = "", 
+    y = "Wartość błędu MAPE [%] po permutacji zmiennej"
+  )
+vi
+
+ggsave(
+  filename = "template_latex/rys/vi.pdf",
+  plot = vi,
+  width = width_single,
+  height = height_single,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+### Globalny wykres wartości SHAP dla modelu XGBoost
+
+```{r}
+
+shap <- shapviz(final_xgb, X_pred = test_xgb, X = X_test_xgb)
+
+plot_shap <- sv_importance(
+  shap,
+  kind = "beeswarm",
+  max_display = 15,
+  color_bar_title = "Wartość cechy"
+)
+
+plot_shap$scales$scales[[1]]$labels <- c("Niska", "Wysoka")
+
+global_shap <- plot_shap+
+  theme_minimal(base_size = 8)+
+  theme(
+    strip.text = element_blank(),
+    strip.background = element_blank(),
+    axis.text = element_text(size = 7),
+    axis.title = element_text(size = 8),
+    axis.text.y = element_text(color = "black", size = 8),
+    legend.title = element_text(color = "black", size = 8),
+  )+
+  labs(
+    #title = "Wpływ cech na predykcje modelu XGBoost",
+    #subtitle = "15 najważniejszych cech (Metoda SHAP)",
+    x = "Wartość SHAP"
+  )
+global_shap
+
+ggsave(
+  filename = "template_latex/rys/global_shap.png",
+  plot = global_shap,
+  width = width_single,
+  height = height_single,
+  units = unit,
+  dpi = 1200
+)
+```
+
+### Lokalna dekompozycja decyzji predykcyjnych modelu XGBoost
+
+Pojazd z najmniejszym błędem
+
+```{r}
+
+best_pred_low_bd <- X_test[best_pred_low,]
+```
+
+**Wykres Break–down**
+
+```{r, message=FALSE}
+
+set.seed(2027)
+
+bd_best <- predict_parts(
+  explainer = explainer_xgboost,
+  new_observation = best_pred_low_bd,
+  type = "break_down",
+  N = NULL
+)
+
+bd1 <- plot(bd_best, digits = 0)
+bd1$coordinates$clip <- "off"
+
+# "," zamiast "," na wykresie
+sc1 <- bd1$scales$get_scales("x")
+sc1$labels <- gsub("(?<=\\d)\\.(?=\\d)", ",", sc1$labels, perl = TRUE)
+
+breakdown_best <- bd1+
+  theme_minimal(base_size = 8)+
+  theme(
+    strip.text = element_blank(),
+    strip.background = element_blank(),
+    axis.text = element_text(size = 7),
+    axis.title = element_text(size = 8),
+    axis.text.y = element_text(color = "black", size = 8),
+    legend.position = "none",
+    # szerszy margines z prawej strony
+    plot.margin = margin(0, 30, 0, 0, "pt")
+  )+
+  labs(
+    title = NULL,
+    subtitle = NULL
+  )
+breakdown_best
+
+ggsave(
+  filename = "template_latex/rys/breakdown_best.pdf",
+  plot = breakdown_best,
+  width = width_single,
+  height = height_single,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+Pojazd z największym błędem
+
+```{r}
+
+worst_pred_low_bd <- X_test[worst_pred_low,]
+```
+
+**Wykres Break–down**
+
+```{r, message=FALSE}
+
+set.seed(2027)
+
+bd_worst <- predict_parts(
+  explainer = explainer_xgboost,
+  new_observation = worst_pred_low_bd,
+  type = "break_down",
+  N = NULL
+)
+
+bd2 <- plot(bd_worst, digits = 0)
+
+bd2$coordinates$clip <- "off"
+
+# "," zamiast "," na wykresie
+sc2 <- bd2$scales$get_scales("x")
+sc2$labels <- gsub("(?<=\\d)\\.(?=\\d)", ",", sc2$labels, perl = TRUE)
+
+breakdown_worst <- bd2+
+  theme_minimal(base_size = 8)+
+  theme(
+    strip.text = element_blank(),
+    strip.background = element_blank(),
+    axis.text = element_text(size = 7),
+    axis.title = element_text(size = 8),
+    axis.text.y = element_text(color = "black", size = 8),
+    legend.position = "none",
+    # szerszy margines z prawej strony
+    plot.margin = margin(0, 30, 0, 0, "pt"),
+  )+
+  labs(
+    title = NULL,
+    subtitle = NULL
+  )
+breakdown_worst
+
+ggsave(
+  filename = "template_latex/rys/breakdown_worst.pdf",
+  plot = breakdown_worst,
+  width = width_single,
+  height = height_single,
+  units = unit,
+  device = cairo_pdf
+)
+```
+
+Kolejność dodawania zmiennych dyktowana algorytmem zachłannym – wybierano te zmienne, które w danym momencie przyczynią się do największej zmiany w prognozie.
+
+**Ceteris Paribus**
+
+```{r}
+
+custom_splits <- list(
+  miles = seq(0, 210000, by = 1000),
+  year = seq(2000, 2022, by = 1),
+  engine_kW = seq(30, 500, by = 1),
+  engine_vol = seq(0, 6.5, by = 0.1)
+)
+
+set.seed(2027)
+
+cp <- predict_profile(
+  explainer = explainer_xgboost,
+  new_observation = worst_pred_low_bd,
+  variables = wybrane_zmienne,
+  variable_splits = custom_splits
+)
+
+# Przebieg
+cp_miles <- plot(cp, variables = "miles")+
+  theme_minimal(base_size = 8)+
+  theme(
+    strip.text = element_blank(),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )+
+  scale_x_continuous(labels = tys)+
+  scale_y_continuous(limits = c(2000, 30000),
+                     labels = tys)+
+  labs(
+    title = NULL,
+    subtitle = NULL,
+    x = "Przebieg [mi]",
+    y = "Prognozowana cena [GBP]"
+  )
+cp_miles$layers$geom_line$aes_params$linewidth <- 0.6
+cp_miles
+
+ggsave(
+  filename = "template_latex/rys/cp_miles.pdf",
+  plot = cp_miles,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+
+# Rok produkcji
+cp_year <- plot(cp, variables = "year")+
+  theme_minimal(base_size = 8)+
+  theme(
+    strip.text = element_blank(),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )+
+  scale_x_continuous(labels = tys)+
+  scale_y_continuous(limits = c(2000, 30000),
+                     labels = tys)+
+  labs(
+    title = NULL,
+    subtitle = NULL,
+    x = "Rok produkcji",
+    y = "Prognozowana cena [GBP]"
+  )
+cp_year$layers$geom_line$aes_params$linewidth <- 0.6
+cp_year
+
+ggsave(
+  filename = "template_latex/rys/cp_year.pdf",
+  plot = cp_year,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+
+# Moc silnika
+cp_engine_kW <- plot(cp, variables = "engine_kW")+
+  theme_minimal(base_size = 8)+
+  theme(
+    strip.text = element_blank(),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )+
+  scale_x_continuous(labels = tys)+
+  scale_y_continuous(limits = c(2000, 30000),
+                     labels = tys)+
+  labs(
+    title = NULL,
+    subtitle = NULL,
+    x = "Moc silnika [kW]",
+    y = "Prognozowana cena [GBP]"
+  )
+cp_engine_kW$layers$geom_line$aes_params$linewidth <- 0.6
+cp_engine_kW
+
+ggsave(
+  filename = "template_latex/rys/cp_engine_kW.pdf",
+  plot = cp_engine_kW,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+
+# Pojemność silnika
+cp_engine_vol <- plot(cp, variables = "engine_vol")+
+  theme_minimal(base_size = 8)+
+  theme(
+    strip.text = element_blank(),
+    axis.title = element_text(size = 8),
+    axis.text = element_text(size = 7)
+  )+
+  scale_x_continuous(labels = tys)+
+  scale_y_continuous(limits = c(2000, 30000),
+                     labels = tys)+
+  labs(
+    title = NULL,
+    subtitle = NULL,
+    x = "Pojemność silnika [l]",
+    y = "Prognozowana cena [GBP]"
+  )
+cp_engine_vol$layers$geom_line$aes_params$linewidth <- 0.6
+cp_engine_vol
+
+ggsave(
+  filename = "template_latex/rys/cp_engine_vol.pdf",
+  plot = cp_engine_vol,
+  width = width_2x2,
+  height = height_2x2,
+  units = unit,
+  device = cairo_pdf
+)
+```
