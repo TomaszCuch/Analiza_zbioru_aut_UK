@@ -561,7 +561,7 @@ Zakrzywiona czerwona linia dla regresji pojawiła się poprzez użycie logarytmu
 ## Lokalna dekompozycja decyzji predykcyjnych
 
 | Cena prawdziwa | Prognoza | Błąd bezwzględny | Błąd względny \[%\] |
-|---:|:--:|:--:|:--:|
+|------------------------------:|:------------:|:------------:|:------------:|
 | **Obserwacja z najmniejszym błędem prognozy** |  |  |  |
 | *Fiat 500, 2016, 18 117 mi, 1,2 l, 51 kW, benzyna* |  |  |  |
 | 7 990 | 7 990,06 | 0,06 | 0,00073 |
@@ -609,7 +609,7 @@ Aplikacja do prognozowania ceny wybranego przez użytkownika samochodu
 
 *Model: XGBoost, rynek: Wielka Brytania (październik 2022)*
 
-<https://tomaszcuch.shinyapps.io/Predykcja_ceny_auta_CatBoost/>
+<https://01a19d2f-9688-4218-0bc9-29123eae962b.share.connect.posit.cloud>
 
 ![](images/29.png)
 
