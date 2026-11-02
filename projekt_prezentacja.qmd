@@ -561,7 +561,7 @@ Zakrzywiona czerwona linia dla regresji pojawiła się poprzez użycie logarytmu
 ## Lokalna dekompozycja decyzji predykcyjnych
 
 | Cena prawdziwa | Prognoza | Błąd bezwzględny | Błąd względny \[%\] |
-|------------------------------:|:------------:|:------------:|:------------:|
+|------------------------------------:|:--------:|:-----------:|:-----------:|
 | **Obserwacja z najmniejszym błędem prognozy** |  |  |  |
 | *Fiat 500, 2016, 18 117 mi, 1,2 l, 51 kW, benzyna* |  |  |  |
 | 7 990 | 7 990,06 | 0,06 | 0,00073 |
