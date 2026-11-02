@@ -393,7 +393,9 @@ Czerwona to mediana, niebieska to średnia
 
 ![](images/8.png)
 
-![](images/9.png) ![](images/10.png)
+![](images/9.png)
+
+![](images/10.png)
 
 ## Korelacje zmiennych numerycznych
 
@@ -486,7 +488,7 @@ Zródło: <https://lightgbm.readthedocs.io/en/latest/Features.html>
 
 ## Czas tuningu + treningu modeli a skuteczność
 
-![](images/clipboard-465462610.png)
+![](images/21.png)
 
 ## Analiza błędów predykcyjnych modeli
 
@@ -593,9 +595,9 @@ Wykresy ceteris paribus dla zmiennych numerycznych samochodu o największym bł�
 
     | Zbiór       | R^2^  |  MAE  | RMSE  | MAPE (%) |
     |-------------|:-----:|:-----:|:-----:|:--------:|
-    | Treningowy  | 0.991 |  916  | 1 684 |   5.94   |
-    | Walidacyjny | 0.980 | 1 139 | 2 544 |   7.44   |
-    | Testowy     | 0.985 | 1 124 | 2 167 |   7.43   |
+    | Treningowy  | 0,991 |  916  | 1 684 |   5,94   |
+    | Walidacyjny | 0,980 | 1 139 | 2 544 |   7,44   |
+    | Testowy     | 0,985 | 1 124 | 2 167 |   7,43   |
 
 - Pomimo złożoności sieci neuronowej MLP, modele drzewiaste, a szczególnie algorytm XGBoost i reszta modeli boostingowych osiągnęły lepsze wyniki względem każdej branej pod uwagę metryki regresyjnej
 
