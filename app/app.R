@@ -94,7 +94,7 @@ granice_modelu <- list(
 )
 
 train_sample_3k <- readRDS("dane/train_sample_3k.rds")
-model <- xgb.load("model/final_xgboost_model.ubj")
+model <- readRDS("model/final_xgboost_model.rds")
 recipe_prepped_boosting <- readRDS("dane/recipe_prepped_boosting.rds")
 slownik <- readRDS("dane/slownik.rds")
 
